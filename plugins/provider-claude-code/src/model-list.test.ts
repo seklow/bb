@@ -100,12 +100,25 @@ describe("buildClaudeCodeModels", () => {
     ]);
   });
 
-  it("maps reported effort levels, adding ultracode alongside xhigh", () => {
+  it("maps reported effort levels; xhigh models offer an Ultracode switch, others a fixed-off one", () => {
     const result = buildClaudeCodeModels(DISCOVERED_MODELS);
+    const find = (model: string) =>
+      [...result.models, ...result.selectedOnlyModels].find(
+        (candidate) => candidate.model === model,
+      );
     const efforts = (model: string) =>
-      result.models
-        .find((candidate) => candidate.model === model)
-        ?.supportedReasoningEfforts.map((effort) => effort.reasoningEffort);
+      find(model)?.supportedReasoningEfforts.map(
+        (effort) => effort.reasoningEffort,
+      );
+    const ultracode = {
+      type: "boolean",
+      id: "ultracode",
+      label: "Ultracode",
+      description:
+        "Dynamic workflows for substantive tasks, at any effort level.",
+      value: false,
+      experimental_sticky: true,
+    };
 
     expect(efforts("claude-opus-5-5[1m]")).toEqual([
       "low",
@@ -116,10 +129,27 @@ describe("buildClaudeCodeModels", () => {
       "max",
     ]);
     expect(efforts("claude-haiku-4-5-20251001")).toEqual(["low"]);
+    expect(find("claude-opus-5-5[1m]")?.defaultReasoningEffort).toBe("high");
+    expect(find("claude-opus-5-5[1m]")?.sessionOptions).toEqual([ultracode]);
+    expect(find("opus[1m]")?.sessionOptions).toEqual([ultracode]);
+    expect(find("claude-haiku-4-5-20251001")?.sessionOptions).toEqual([
+      { ...ultracode, fixed: true },
+    ]);
+  });
+
+  it("declares no Ultracode switch when no model offers xhigh", () => {
+    const result = buildClaudeCodeModels(
+      DISCOVERED_MODELS.map((model): ModelInfo => ({
+        ...model,
+        supportedEffortLevels: ["low", "medium", "high"],
+      })),
+    );
+
     expect(
-      result.models.find((model) => model.model === "claude-opus-5-5[1m]")
-        ?.defaultReasoningEffort,
-    ).toBe("high");
+      [...result.models, ...result.selectedOnlyModels].flatMap(
+        (model) => model.sessionOptions ?? [],
+      ),
+    ).toEqual([]);
   });
 
   it("marks the first model as default when Claude Code reports no default", () => {

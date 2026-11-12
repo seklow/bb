@@ -27,8 +27,7 @@ export const XHIGH_REASONING_EFFORT: ModelReasoningEffort = {
 };
 export const ULTRACODE_REASONING_EFFORT: ModelReasoningEffort = {
   reasoningEffort: "ultracode",
-  description:
-    "Extra high reasoning effort plus multi-agent workflow orchestration",
+  description: "Extra High with Ultracode on.",
 };
 export const MAX_REASONING_EFFORT: ModelReasoningEffort = {
   reasoningEffort: "max",

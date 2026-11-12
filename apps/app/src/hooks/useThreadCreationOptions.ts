@@ -79,6 +79,7 @@ import {
   updateThreadPromptSelections,
 } from "./thread-creation-options/selection-state";
 import {
+  findCatalogModel,
   resolveModelCatalogSelection,
   resolveModelReasoningLevel,
 } from "./thread-creation-options/model-catalog-selection";
@@ -148,6 +149,7 @@ interface UseThreadCreationOptionsResult<TExecutionInputSources> {
     model: string,
     preferredReasoningLevel: ReasoningLevel,
   ) => ModelReasoningOptions;
+  sessionOptionsForModel: (model: string) => readonly ThreadSessionOption[];
   declaredSessionOptions: ThreadSessionOption[];
   sessionOptionSelections: SessionOptionSelections;
   setSessionOption: (optionId: string, value: SessionOptionValue) => void;
@@ -603,6 +605,20 @@ export function useThreadCreationOptions(
       modelCatalogIsVerified,
       requestedSessionOptionSelections,
       selectedProviderInfo,
+    ],
+  );
+  const sessionOptionsForModel = useCallback(
+    (model: string): readonly ThreadSessionOption[] =>
+      findCatalogModel(
+        [
+          ...(executionOptionsQuery.data?.models ?? []),
+          ...(executionOptionsQuery.data?.selectedOnlyModels ?? []),
+        ],
+        model,
+      )?.sessionOptions ?? [],
+    [
+      executionOptionsQuery.data?.models,
+      executionOptionsQuery.data?.selectedOnlyModels,
     ],
   );
 
@@ -1162,6 +1178,7 @@ export function useThreadCreationOptions(
     modelCatalogIsSettled,
     reasoningOptions,
     resolveReasoningForModel,
+    sessionOptionsForModel,
     declaredSessionOptions,
     sessionOptionSelections,
     setSessionOption,

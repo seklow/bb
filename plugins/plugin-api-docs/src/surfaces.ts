@@ -830,6 +830,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginProviderDeclaration",
           "AvailableModel",
           "AvailableModel.reasoningDiscovery",
+          "AvailableModel.sessionOptions.experimental_sticky",
           "ModelServiceTier",
           "providerInstallationStatusParamsSchema",
           "ProviderInstallationStatusParams",

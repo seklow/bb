@@ -8,12 +8,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
   CanUseTool,
+  ModelInfo,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -102,6 +104,7 @@ interface ControlledClaudeQuery {
   setModel: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
   supportedCommands: ReturnType<typeof vi.fn>;
+  supportedModels: ReturnType<typeof vi.fn>;
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage>;
 }
 
@@ -109,6 +112,7 @@ interface ClaudeQueryCallOptions {
   allowDangerouslySkipPermissions?: boolean;
   mcpServers?: BridgeSessionOptions["mcpServers"];
   canUseTool?: CanUseTool;
+  effort?: BridgeSessionOptions["effort"];
   env?: Record<string, string | undefined>;
   extraArgs?: Record<string, string | null>;
   hooks?: BridgeSessionHooks;
@@ -322,6 +326,7 @@ function createControlledClaudeQuery(): ControlledClaudeQuery {
     setModel: vi.fn().mockResolvedValue(undefined),
     setPermissionMode: vi.fn().mockResolvedValue(undefined),
     supportedCommands: vi.fn().mockResolvedValue([]),
+    supportedModels: vi.fn().mockResolvedValue([]),
     [Symbol.asyncIterator]() {
       return iterator;
     },
@@ -603,8 +608,10 @@ function sendResumeThread(args: ResumeBridgeThreadArgs): void {
   });
 }
 
+const STOP_BRIDGE_THREAD_REQUEST_ID = "stop-bridge-thread";
+
 async function stopBridgeThread(args: StopBridgeThreadArgs): Promise<void> {
-  args.bridge.sendRequest(2, "thread/stop", {
+  args.bridge.sendRequest(STOP_BRIDGE_THREAD_REQUEST_ID, "thread/stop", {
     threadId: args.threadId,
     providerThreadId: args.threadId,
     intent: "interrupt",
@@ -612,7 +619,7 @@ async function stopBridgeThread(args: StopBridgeThreadArgs): Promise<void> {
   });
   await args.bridge.flushWork();
   args.queries[0]?.finish();
-  await args.bridge.waitForResponse(2);
+  await args.bridge.waitForResponse(STOP_BRIDGE_THREAD_REQUEST_ID);
 }
 
 function interactionPayload(
@@ -682,6 +689,8 @@ async function forwardAskUserQuestion({
 describe("bridge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("BB_CLAUDE_MODELS_URL", undefined);
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", undefined);
     contextQueryMock.mockImplementation(() => createControlledClaudeQuery());
     queryMock.mockReturnValue({
       initializationResult: vi.fn().mockResolvedValue({
@@ -722,6 +731,7 @@ describe("bridge", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     for (const tempDir of tempDirs.splice(0)) {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1374,6 +1384,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         baseInstructions: "You are a manager.",
         cwd: "/tmp/worktree",
         instructionMode: "replace",
@@ -1406,6 +1417,7 @@ describe("bridge", () => {
           sandboxEnabled: true,
           serviceTier: "default",
           workflowsEnabled: false,
+          ultracode: false,
           baseInstructions: "You are a coder.",
           cwd: "/tmp/worktree",
           instructionMode: "append",
@@ -1419,61 +1431,84 @@ describe("bridge", () => {
     },
   );
 
-  it("decomposes ultracode into xhigh effort plus the ultracode settings flag", () => {
-    const options = buildSessionOptions(
-      {
-        chromeEnabled: false,
-        disable1MContext: false,
-        artifactsEnabled: false,
-        sandboxEnabled: true,
-        serviceTier: "default",
-        baseInstructions: "You are a coder.",
-        cwd: "/tmp/worktree",
-        instructionMode: "append",
-        reasoningLevel: "ultracode",
-        workflowsEnabled: true,
-        permissionMode: "default",
-        permissionScope: "workspace",
-      },
-      {},
-    );
-
-    expect(options.effort).toBe("xhigh");
-    expect(options.settings).toEqual({
-      autoMemoryEnabled: true,
-      enableWorkflows: true,
+  it.each([
+    {
+      method: "thread/start",
+      reasoningLevel: "ultracode",
+      sessionOptions: undefined,
+      effort: "xhigh",
       ultracode: true,
-      fastMode: false,
-    });
-  });
-
-  it("enables workflows without the ultracode flag at lower efforts", () => {
-    const options = buildSessionOptions(
-      {
-        chromeEnabled: false,
-        disable1MContext: false,
-        artifactsEnabled: false,
-        sandboxEnabled: true,
-        serviceTier: "default",
-        baseInstructions: "You are a coder.",
-        cwd: "/tmp/worktree",
-        instructionMode: "append",
-        reasoningLevel: "high",
-        workflowsEnabled: true,
-        permissionMode: "default",
-        permissionScope: "workspace",
-      },
-      {},
-    );
-
-    expect(options.effort).toBe("high");
-    expect(options.settings).toEqual({
-      autoMemoryEnabled: true,
-      enableWorkflows: true,
+    },
+    {
+      method: "thread/start",
+      reasoningLevel: "high",
+      sessionOptions: undefined,
+      effort: "high",
       ultracode: false,
-      fastMode: false,
-    });
-  });
+    },
+    {
+      method: "thread/start",
+      reasoningLevel: "max",
+      sessionOptions: { ultracode: true },
+      effort: "max",
+      ultracode: true,
+    },
+    {
+      method: "thread/start",
+      reasoningLevel: "ultracode",
+      sessionOptions: { ultracode: false },
+      effort: "xhigh",
+      ultracode: true,
+    },
+    {
+      method: "thread/resume",
+      reasoningLevel: "high",
+      sessionOptions: { ultracode: true },
+      effort: "high",
+      ultracode: true,
+    },
+  ])(
+    "$method at $reasoningLevel with choices $sessionOptions starts Claude at $effort effort with ultracode $ultracode",
+    async ({ method, reasoningLevel, sessionOptions, effort, ultracode }) => {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const queries: ControlledClaudeQuery[] = [];
+      queryMock.mockImplementation(() => {
+        const query = createControlledClaudeQuery();
+        queries.push(query);
+        return query;
+      });
+      const threadId = `thread-ultracode-${reasoningLevel}-${String(ultracode)}`;
+      try {
+        bridge.sendRequest(1, method, {
+          threadId,
+          cwd: "/tmp/worktree",
+          instructionMode: "append",
+          options: {
+            ...canonicalOptions({
+              providerOptions: { workflowsEnabled: true },
+            }),
+            reasoningLevel,
+            ...(sessionOptions === undefined ? {} : { sessionOptions }),
+          },
+          ...(method === "thread/resume"
+            ? { providerThreadId: "provider-ultracode" }
+            : {}),
+        });
+        await bridge.waitForResponse(1);
+
+        expect(getLatestQueryOptions()).toMatchObject({
+          effort,
+          settings: { enableWorkflows: true, ultracode },
+          ...(method === "thread/resume"
+            ? { resume: "provider-ultracode" }
+            : {}),
+        });
+      } finally {
+        await stopBridgeThread({ bridge, queries, threadId });
+        bridge.restore();
+      }
+    },
+  );
 
   it("sets fast mode only for the fast service tier at session start", () => {
     const options = buildSessionOptions(
@@ -1483,6 +1518,7 @@ describe("bridge", () => {
         artifactsEnabled: false,
         sandboxEnabled: true,
         workflowsEnabled: false,
+        ultracode: false,
         serviceTier: "fast",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1505,6 +1541,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1532,6 +1569,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         memoryEnabled: false,
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1558,6 +1596,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1593,6 +1632,7 @@ describe("bridge", () => {
           artifactsEnabled: false,
           sandboxEnabled: true,
           workflowsEnabled: false,
+          ultracode: false,
           cwd: "/tmp/worktree",
           instructionMode: "append",
           permissionMode,
@@ -1624,6 +1664,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1653,6 +1694,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1675,6 +1717,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1704,6 +1747,7 @@ describe("bridge", () => {
           sandboxEnabled: true,
           serviceTier: "default",
           workflowsEnabled: false,
+          ultracode: false,
           baseInstructions: "You are a coder.",
           cwd: "/tmp/worktree",
           instructionMode: "append",
@@ -1727,6 +1771,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1743,6 +1788,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1779,6 +1825,7 @@ describe("bridge", () => {
         sandboxEnabled: true,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         additionalWorkspaceWriteRoots: ["/repo/.git/worktrees/bb13"],
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
@@ -1803,6 +1850,7 @@ describe("bridge", () => {
         sandboxEnabled: false,
         serviceTier: "default",
         workflowsEnabled: false,
+        ultracode: false,
         additionalWorkspaceWriteRoots: ["/repo/.git/worktrees/bb13"],
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
@@ -4839,6 +4887,642 @@ describe("bridge", () => {
       queries.forEach((query) => query.finish());
       bridge.restore();
     }
+  });
+
+  describe("ultracode", () => {
+    const threadOptions = (
+      workflowsEnabled: boolean,
+      options: Record<string, JsonValue>,
+    ): Record<string, JsonValue> => ({
+      ...canonicalOptions({ providerOptions: { workflowsEnabled } }),
+      ...options,
+    });
+
+    function ultracodeOption(value: boolean) {
+      return {
+        type: "boolean",
+        id: "ultracode",
+        label: "Ultracode",
+        description:
+          "Dynamic workflows for substantive tasks, at any effort level.",
+        value,
+        experimental_sticky: true,
+      };
+    }
+
+    function startUltracodeThread(args: {
+      bridge: BridgeJsonRpcTestHarness;
+      threadId: string;
+      workflowsEnabled: boolean;
+      options: Record<string, JsonValue>;
+    }): Promise<BridgeJsonRpcOutputMessage> {
+      args.bridge.sendRequest(1, "thread/start", {
+        threadId: args.threadId,
+        cwd: "/tmp/worktree",
+        instructionMode: "append",
+        options: threadOptions(args.workflowsEnabled, args.options),
+      });
+      return args.bridge.waitForResponse(1);
+    }
+
+    async function sendUltracodeTurn(args: {
+      bridge: BridgeJsonRpcTestHarness;
+      threadId: string;
+      id: number;
+      workflowsEnabled: boolean;
+      options: Record<string, JsonValue>;
+    }): Promise<void> {
+      args.bridge.sendRequest(args.id, "turn/start", {
+        ...canonicalTurnParams({
+          threadId: args.threadId,
+          input: [{ type: "text", text: `turn ${args.id}` }],
+        }),
+        options: threadOptions(args.workflowsEnabled, args.options),
+      });
+      await readNextPrompt(getLatestQueryCall());
+      await args.bridge.waitForResponse(args.id);
+    }
+
+    function sessionOptionStates(bridge: BridgeJsonRpcTestHarness) {
+      return assembleCapturedThreadEvents(
+        bridge.messages,
+        "claude-code",
+      ).flatMap((event) =>
+        event.type === "thread/extensionState/updated" &&
+        event.kind === "bb/session-options"
+          ? [event.payload]
+          : [],
+      );
+    }
+
+    function mockSessionModels(models: ModelInfo[]): ControlledClaudeQuery[] {
+      const queries: ControlledClaudeQuery[] = [];
+      queryMock.mockImplementation(() => {
+        const query = createControlledClaudeQuery();
+        query.supportedModels.mockResolvedValue(models);
+        queries.push(query);
+        return query;
+      });
+      return queries;
+    }
+
+    function emitInit(
+      query: ControlledClaudeQuery | undefined,
+      threadId: string,
+      model: string,
+    ): void {
+      query?.emit({
+        type: "system",
+        subtype: "init",
+        apiKeySource: "none",
+        claude_code_version: "2.1.322",
+        cwd: "/tmp/worktree",
+        tools: [],
+        mcp_servers: [],
+        model,
+        permissionMode: "default",
+        slash_commands: [],
+        output_style: "default",
+        skills: [],
+        plugins: [],
+        uuid: randomUUID(),
+        session_id: threadId,
+      });
+    }
+
+    const opusWithXhigh: ModelInfo = {
+      value: "default",
+      resolvedModel: "claude-opus-5-5",
+      displayName: "Default (recommended)",
+      description: "Opus 5.5",
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    };
+
+    const sonnetWithoutXhigh: ModelInfo = {
+      value: "claude-sonnet-4-6",
+      displayName: "Sonnet",
+      description: "Sonnet 4.6",
+      supportedEffortLevels: ["low", "medium", "high"],
+    };
+
+    it.each(["thread/start", "thread/resume"] as const)(
+      "%s with a model publishes the option before the first turn",
+      async (method) => {
+        const bridge = createBridgeJsonRpcTestHarness(handleLine);
+        const queries = mockSessionModels([opusWithXhigh]);
+        const threadId = `thread-ultracode-attach-${method}`;
+        try {
+          bridge.sendRequest(1, method, {
+            threadId,
+            cwd: "/tmp/worktree",
+            instructionMode: "append",
+            options: threadOptions(true, {
+              reasoningLevel: "max",
+              model: "claude-opus-5-5",
+            }),
+            ...(method === "thread/resume"
+              ? { providerThreadId: "provider-ultracode-attach" }
+              : {}),
+          });
+          await bridge.waitForResponse(1);
+          await vi.waitFor(() =>
+            expect(sessionOptionStates(bridge)).toEqual([
+              { options: [ultracodeOption(false)] },
+            ]),
+          );
+        } finally {
+          await stopBridgeThread({ bridge, queries, threadId });
+          bridge.restore();
+        }
+      },
+    );
+
+    it.each<Record<string, JsonValue>>([{}, { model: "default" }])(
+      "with %o publishes nothing until system/init reports the model the session runs",
+      async (model) => {
+        const bridge = createBridgeJsonRpcTestHarness(handleLine);
+        const queries = mockSessionModels([opusWithXhigh, sonnetWithoutXhigh]);
+        const threadId = `thread-ultracode-implicit-${JSON.stringify(model)}`;
+        const options = { reasoningLevel: "max", ...model };
+        try {
+          await startUltracodeThread({
+            bridge,
+            threadId,
+            workflowsEnabled: true,
+            options,
+          });
+          await sendUltracodeTurn({
+            bridge,
+            threadId,
+            id: 3,
+            workflowsEnabled: true,
+            options,
+          });
+          await vi.waitFor(() =>
+            expect(queries[0]?.supportedModels).toHaveBeenCalledTimes(1),
+          );
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(sessionOptionStates(bridge)).toEqual([]);
+
+          emitInit(queries[0], threadId, "claude-sonnet-4-6");
+          await vi.waitFor(() =>
+            expect(sessionOptionStates(bridge)).toEqual([{ options: [] }]),
+          );
+          emitInit(queries[0], threadId, "claude-opus-5-5");
+          await vi.waitFor(() =>
+            expect(sessionOptionStates(bridge)).toEqual([
+              { options: [] },
+              { options: [ultracodeOption(false)] },
+            ]),
+          );
+        } finally {
+          await stopBridgeThread({ bridge, queries, threadId });
+          bridge.restore();
+        }
+      },
+    );
+
+    it("a switch to the default model waits for the next system/init", async () => {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const queries = mockSessionModels([opusWithXhigh, sonnetWithoutXhigh]);
+      const threadId = "thread-ultracode-switch-to-default";
+      try {
+        await startUltracodeThread({
+          bridge,
+          threadId,
+          workflowsEnabled: true,
+          options: { model: "claude-opus-5-5" },
+        });
+        await vi.waitFor(() =>
+          expect(sessionOptionStates(bridge)).toEqual([
+            { options: [ultracodeOption(false)] },
+          ]),
+        );
+        emitInit(queries[0], threadId, "claude-opus-5-5");
+        await vi.waitFor(() =>
+          expect(queries[0]?.supportedCommands).toHaveBeenCalledTimes(1),
+        );
+        await sendUltracodeTurn({
+          bridge,
+          threadId,
+          id: 3,
+          workflowsEnabled: true,
+          options: { model: "default", sessionOptions: { ultracode: true } },
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(sessionOptionStates(bridge)).toEqual([
+          { options: [ultracodeOption(false)] },
+        ]);
+
+        emitInit(queries[0], threadId, "claude-sonnet-4-6");
+        await vi.waitFor(() =>
+          expect(sessionOptionStates(bridge)).toEqual([
+            { options: [ultracodeOption(false)] },
+            { options: [] },
+          ]),
+        );
+      } finally {
+        await stopBridgeThread({ bridge, queries, threadId });
+        bridge.restore();
+      }
+    });
+
+    it("judges an explicit model by the model system/init reports", async () => {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const queries = mockSessionModels([opusWithXhigh, sonnetWithoutXhigh]);
+      const threadId = "thread-ultracode-explicit-init";
+      try {
+        await startUltracodeThread({
+          bridge,
+          threadId,
+          workflowsEnabled: true,
+          options: { model: "claude-opus-5-5" },
+        });
+        await vi.waitFor(() =>
+          expect(sessionOptionStates(bridge)).toEqual([
+            { options: [ultracodeOption(false)] },
+          ]),
+        );
+        emitInit(queries[0], threadId, "claude-sonnet-4-6");
+        await vi.waitFor(() =>
+          expect(sessionOptionStates(bridge)).toEqual([
+            { options: [ultracodeOption(false)] },
+            { options: [] },
+          ]),
+        );
+      } finally {
+        await stopBridgeThread({ bridge, queries, threadId });
+        bridge.restore();
+      }
+    });
+
+    it("keeps judging by the reported model when a model switch fails", async () => {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const queries = mockSessionModels([opusWithXhigh, sonnetWithoutXhigh]);
+      const threadId = "thread-ultracode-failed-switch";
+      try {
+        await startUltracodeThread({
+          bridge,
+          threadId,
+          workflowsEnabled: true,
+          options: { model: "claude-sonnet-4-6" },
+        });
+        emitInit(queries[0], threadId, "claude-opus-5-5");
+        await vi.waitFor(() =>
+          expect(sessionOptionStates(bridge)).toEqual([
+            { options: [] },
+            { options: [ultracodeOption(false)] },
+          ]),
+        );
+        queries[0]?.setModel.mockRejectedValueOnce(new Error("switch refused"));
+        bridge.sendRequest(3, "turn/start", {
+          ...canonicalTurnParams({
+            threadId,
+            input: [{ type: "text", text: "turn 3" }],
+          }),
+          options: threadOptions(true, { model: "claude-haiku-4-5" }),
+        });
+        await bridge.waitForResponse(3);
+        await sendUltracodeTurn({
+          bridge,
+          threadId,
+          id: 4,
+          workflowsEnabled: true,
+          options: { model: "claude-sonnet-4-6" },
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(sessionOptionStates(bridge)).toEqual([
+          { options: [] },
+          { options: [ultracodeOption(false)] },
+        ]);
+      } finally {
+        await stopBridgeThread({ bridge, queries, threadId });
+        bridge.restore();
+      }
+    });
+
+    it("publishes nothing from a catalog that loads after workflows were turned off", async () => {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      let resolveModels!: (models: ModelInfo[]) => void;
+      const queries: ControlledClaudeQuery[] = [];
+      queryMock.mockImplementation(() => {
+        const query = createControlledClaudeQuery();
+        query.supportedModels.mockReturnValue(
+          new Promise<ModelInfo[]>((resolve) => {
+            resolveModels = resolve;
+          }),
+        );
+        queries.push(query);
+        return query;
+      });
+      const threadId = "thread-ultracode-deferred-catalog";
+      const options = { model: "claude-opus-5-5" };
+      try {
+        await startUltracodeThread({
+          bridge,
+          threadId,
+          workflowsEnabled: true,
+          options,
+        });
+        await sendUltracodeTurn({
+          bridge,
+          threadId,
+          id: 3,
+          workflowsEnabled: false,
+          options,
+        });
+        expect(sessionOptionStates(bridge)).toEqual([{ options: [] }]);
+
+        resolveModels([opusWithXhigh]);
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(sessionOptionStates(bridge)).toEqual([{ options: [] }]);
+      } finally {
+        await stopBridgeThread({ bridge, queries, threadId });
+        bridge.restore();
+      }
+    });
+
+    it.each<{
+      workflowsEnabled: boolean;
+      models: ModelInfo[] | null;
+      model?: string;
+      catalogLoads: number;
+      published: JsonValue[];
+    }>([
+      {
+        workflowsEnabled: false,
+        models: [opusWithXhigh],
+        catalogLoads: 0,
+        published: [{ options: [] }],
+      },
+      {
+        workflowsEnabled: true,
+        models: [opusWithXhigh, sonnetWithoutXhigh],
+        model: "claude-sonnet-4-6",
+        catalogLoads: 1,
+        published: [{ options: [] }],
+      },
+      {
+        workflowsEnabled: true,
+        models: null,
+        model: "claude-opus-5-5",
+        catalogLoads: 2,
+        published: [],
+      },
+      {
+        workflowsEnabled: true,
+        models: [opusWithXhigh],
+        model: "claude-unlisted-1",
+        catalogLoads: 1,
+        published: [],
+      },
+    ])(
+      "a resumed session publishes an empty snapshot only when the option is known to be unavailable (workflows $workflowsEnabled, publishes $published)",
+      async ({ workflowsEnabled, models, model, catalogLoads, published }) => {
+        const bridge = createBridgeJsonRpcTestHarness(handleLine);
+        const queries: ControlledClaudeQuery[] = [];
+        queryMock.mockImplementation(() => {
+          const query = createControlledClaudeQuery();
+          if (models === null) {
+            query.supportedModels.mockRejectedValue(new Error("no catalog"));
+          } else {
+            query.supportedModels.mockResolvedValue(models);
+          }
+          queries.push(query);
+          return query;
+        });
+        const threadId = `thread-ultracode-resumed-${String(workflowsEnabled)}-${String(models === null)}-${model ?? "listed"}`;
+        const levelAndModel = {
+          reasoningLevel: "high",
+          ...(model === undefined ? {} : { model }),
+        };
+        try {
+          bridge.sendRequest(1, "thread/resume", {
+            threadId,
+            cwd: "/tmp/worktree",
+            instructionMode: "append",
+            options: threadOptions(workflowsEnabled, levelAndModel),
+            providerThreadId: "provider-ultracode-resumed",
+          });
+          await bridge.waitForResponse(1);
+          await sendUltracodeTurn({
+            bridge,
+            threadId,
+            id: 3,
+            workflowsEnabled,
+            options: levelAndModel,
+          });
+          await vi.waitFor(() =>
+            expect(queries[0]?.supportedModels).toHaveBeenCalledTimes(
+              catalogLoads,
+            ),
+          );
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(sessionOptionStates(bridge)).toEqual(published);
+        } finally {
+          await stopBridgeThread({ bridge, queries, threadId });
+          bridge.restore();
+        }
+      },
+    );
+
+    it("applies the choice live with the effort, and a turn without a level or a choice keeps the effort and turns Ultracode off", async () => {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const queries: ControlledClaudeQuery[] = [];
+      queryMock.mockImplementation(() => {
+        const query = createControlledClaudeQuery();
+        queries.push(query);
+        return query;
+      });
+      const threadId = "thread-ultracode-live";
+      const turn = (id: number, options: Record<string, JsonValue>) =>
+        sendUltracodeTurn({
+          bridge,
+          threadId,
+          id,
+          workflowsEnabled: true,
+          options,
+        });
+      const flags = (effortLevel: string, ultracode: boolean) => ({
+        autoMemoryEnabled: true,
+        enableWorkflows: true,
+        effortLevel,
+        ultracode,
+        fastMode: false,
+      });
+      try {
+        await startUltracodeThread({
+          bridge,
+          threadId,
+          workflowsEnabled: true,
+          options: { reasoningLevel: "max" },
+        });
+        expect(getLatestQueryOptions().settings).toMatchObject({
+          ultracode: false,
+        });
+
+        await turn(2, {
+          reasoningLevel: "max",
+          sessionOptions: { ultracode: true },
+        });
+        expect(queries[0]?.applyFlagSettings).toHaveBeenLastCalledWith(
+          flags("max", true),
+        );
+
+        await turn(3, {
+          reasoningLevel: "high",
+          sessionOptions: { ultracode: true },
+        });
+        expect(queries[0]?.applyFlagSettings).toHaveBeenLastCalledWith(
+          flags("high", true),
+        );
+
+        await turn(4, {});
+        expect(queries[0]?.applyFlagSettings).toHaveBeenLastCalledWith(
+          flags("high", false),
+        );
+        expect(queries).toHaveLength(1);
+      } finally {
+        await stopBridgeThread({ bridge, queries, threadId });
+        bridge.restore();
+      }
+    });
+
+    it("publishes the option while workflows are on and the model offers xhigh, and withdraws it otherwise", async () => {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const queries = mockSessionModels([opusWithXhigh, sonnetWithoutXhigh]);
+      const threadId = "thread-ultracode-options";
+      const turn = (
+        id: number,
+        workflowsEnabled: boolean,
+        options: Record<string, JsonValue>,
+      ) =>
+        sendUltracodeTurn({ bridge, threadId, id, workflowsEnabled, options });
+      try {
+        await startUltracodeThread({
+          bridge,
+          threadId,
+          workflowsEnabled: false,
+          options: { model: "claude-opus-5-5", reasoningLevel: "max" },
+        });
+        await turn(2, false, {});
+        expect(sessionOptionStates(bridge)).toEqual([{ options: [] }]);
+
+        await turn(3, true, { sessionOptions: { ultracode: true } });
+        await vi.waitFor(() =>
+          expect(sessionOptionStates(bridge)).toEqual([
+            { options: [] },
+            { options: [ultracodeOption(true)] },
+          ]),
+        );
+
+        await turn(4, false, {});
+        await turn(5, true, {
+          model: "claude-sonnet-4-6",
+          reasoningLevel: "high",
+        });
+        await turn(6, true, {
+          model: "claude-opus-5-5",
+          reasoningLevel: "ultracode",
+        });
+        await vi.waitFor(() =>
+          expect(sessionOptionStates(bridge)).toEqual([
+            { options: [] },
+            { options: [ultracodeOption(true)] },
+            { options: [] },
+            { options: [ultracodeOption(true)] },
+          ]),
+        );
+        expect(queries[0]?.supportedModels).toHaveBeenCalledTimes(1);
+      } finally {
+        await stopBridgeThread({ bridge, queries, threadId });
+        bridge.restore();
+      }
+    });
+
+    it.each([0, 1])(
+      "offers the option for a pooled account's model that Claude Code does not list, after %i failed account model loads",
+      async (failedLoads) => {
+        let hubRequests = 0;
+        const hub = http.createServer((_request, response) => {
+          hubRequests += 1;
+          if (hubRequests <= failedLoads) {
+            response.writeHead(503);
+            response.end();
+            return;
+          }
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              data: [
+                {
+                  id: "claude-fable-5-2",
+                  display_name: "Fable 5.2",
+                  capabilities: {
+                    effort: {
+                      high: { supported: true },
+                      xhigh: { supported: true },
+                    },
+                  },
+                },
+              ],
+              has_more: false,
+              last_id: "claude-fable-5-2",
+            }),
+          );
+        });
+        await new Promise<void>((resolve) =>
+          hub.listen(0, "127.0.0.1", resolve),
+        );
+        const address = hub.address();
+        if (address === null || typeof address === "string") {
+          throw new Error("Fake hub did not bind a TCP port.");
+        }
+        const bridge = createBridgeJsonRpcTestHarness(handleLine);
+        const queries = mockSessionModels([
+          {
+            value: "default",
+            resolvedModel: "claude-opus-5-5",
+            displayName: "Default (recommended)",
+            description: "Opus 5.5",
+          },
+        ]);
+        const threadId = `thread-ultracode-pooled-${failedLoads}`;
+        const options = {
+          model: "claude-fable-5-2",
+          envVars: {
+            BB_CLAUDE_MODELS_URL: `http://127.0.0.1:${address.port}/hub/claude/v1/models`,
+            ANTHROPIC_AUTH_TOKEN: "hub-token",
+          },
+        };
+        let turnId = 3;
+        try {
+          await startUltracodeThread({
+            bridge,
+            threadId,
+            workflowsEnabled: true,
+            options,
+          });
+          await vi.waitFor(async () => {
+            await sendUltracodeTurn({
+              bridge,
+              threadId,
+              id: turnId++,
+              workflowsEnabled: true,
+              options,
+            });
+            expect(sessionOptionStates(bridge)).toEqual([
+              { options: [ultracodeOption(false)] },
+            ]);
+          });
+          expect(hubRequests).toBe(failedLoads + 1);
+        } finally {
+          await stopBridgeThread({ bridge, queries, threadId });
+          bridge.restore();
+          await new Promise<void>((resolve) => hub.close(() => resolve()));
+        }
+      },
+    );
   });
 
   it.each([false, true])(

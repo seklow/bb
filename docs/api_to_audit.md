@@ -1037,6 +1037,46 @@ ask for one side; whether the repeated-path rule should be the contract's
 a plugin's `name` should be validated as a name prefix here instead of at
 `experimental_filterResolvedNativeRoots`.
 
+## Sticky session options (`experimental_sticky` on `bb/session-options` options and `AvailableModel.sessionOptions`)
+
+A bridge marks an option in its `bb/session-options` snapshot with
+`experimental_sticky: true` when the provider does not keep that setting
+across sessions. The server then keeps the user's choice after the bridge
+applies it and sends it as `sessionOptions` with every `thread/start`,
+`thread/resume`, `thread/fork`, `turn/start` and `turn/steer`, so a session bb
+rebuilds after an idle reap or a daemon restart gets it back. The choice goes
+when the user clears it or the bridge stops publishing the option. Options
+without the flag keep the one-shot rule: a choice is dropped once the bridge
+publishes its value, so a value the provider changes itself is not forced
+back. The thread view marks the option `sticky` and reports the stored choice
+as `chosenValue` beside the reported `value`. For any option, `pendingValue`
+is the stored choice while it differs from `value`: it says the choice and
+the agent's report differ, not that the next turn applies the choice.
+`bb thread options` prints a sticky option's choice instead of a next-turn
+promise, and the picker shows a sticky option without a choice at the active
+model's declared default, or not at all when that model declares none. A
+`model/list` entry carries the flag too, which the new-thread composer reads;
+the server reads it only from the thread's snapshots, and a history edit that
+deletes them records their sticky option ids on the choices it carries and,
+when the snapshot left before the edited message does not offer a carried
+choice's option, appends that snapshot again with the option's latest
+declaration added, so the choice is sent and shown until the new session
+reports.
+
+Core callers: the Claude Code bridge's `ultracode` option. The server decides
+what to keep and send with `retainedSessionOptionSelections`
+(`packages/domain/src/thread-provider-state.ts`); the new-thread composer
+reads the declared flag in `declaredSessionOptionViews`
+(`apps/app/src/components/pickers/SessionOptionsMenu.tsx`).
+
+Docs: [provider-bridge-protocol.md](provider-bridge-protocol.md) "Grammar
+v3", [provider-plugin-api.md](provider-plugin-api.md) §2–3.
+
+**Audit before stabilizing.** Confirm that a second option or provider needs
+it, for example Claude Code's session-scoped `promptCacheTtl` (#7442), and
+decide whether a choice should survive a model switch to a model that does not
+offer the option.
+
 ## `PluginSettingDescriptor.experimental_multiline`
 
 A `type: "string"` descriptor flag that renders a multi-line monospace editor.

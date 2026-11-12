@@ -1,6 +1,7 @@
 import {
   jsonValueSchema,
   removeCommandMentionsFromPromptInput,
+  type BridgeExecutionOptions,
   type DynamicTool,
   type InstructionMode,
   type PromptInput,
@@ -14,6 +15,7 @@ import {
   toClaudePermissionMode,
   type ClaudePermissionMode,
 } from "./interactive-contract.js";
+import { CLAUDE_ULTRACODE_OPTION_ID } from "./model-list.js";
 
 interface AdditionalWorkspaceWriteRootsParams {
   additionalWorkspaceWriteRoots: string[];
@@ -98,6 +100,7 @@ interface BuildInternalSessionParamsArgs {
   instructionMode: InstructionMode;
   options: ClaudeSessionExecutionOptions;
   threadId: string;
+  ultracode: boolean;
 }
 
 function buildInternalSessionParams(
@@ -138,6 +141,7 @@ function buildInternalSessionParams(
       : {}),
     serviceTier: args.options.serviceTier ?? "default",
     workflowsEnabled: args.options.workflowsEnabled,
+    ultracode: args.ultracode,
     chromeEnabled: args.options.chromeEnabled,
     disable1MContext: args.options.disable1MContext,
     artifactsEnabled: args.options.artifactsEnabled,
@@ -170,10 +174,20 @@ type ClaudeCanonicalExecutionOptions = RuntimePermissionPolicy & {
   model?: string | undefined;
   reasoningLevel?: ReasoningLevel | undefined;
   serviceTier?: ServiceTier | undefined;
+  sessionOptions?: BridgeExecutionOptions["sessionOptions"];
   instructions?: string | undefined;
   envVars?: Record<string, string> | undefined;
   providerOptions?: Record<string, unknown> | undefined;
 };
+
+function resolveClaudeUltracode(
+  options: ClaudeCanonicalExecutionOptions,
+): boolean {
+  return (
+    options.reasoningLevel === "ultracode" ||
+    options.sessionOptions?.[CLAUDE_ULTRACODE_OPTION_ID] === true
+  );
+}
 
 interface BuildClaudeSessionParamsArgs {
   threadId: string;
@@ -198,6 +212,7 @@ export function buildClaudeSessionParams(
     dynamicTools: args.dynamicTools,
     instructionMode: args.instructionMode,
     threadId: args.threadId,
+    ultracode: resolveClaudeUltracode(args.options),
     options: {
       ...args.options,
       skillRoots: args.skillRoots,
@@ -263,6 +278,7 @@ export function buildClaudeTurnParams(
       ? { serviceTier: args.options.serviceTier }
       : {}),
     workflowsEnabled: providerOptions.workflowsEnabled,
+    ultracode: resolveClaudeUltracode(args.options),
     chromeEnabled: providerOptions.chromeEnabled,
     disable1MContext: providerOptions.disable1MContext,
     artifactsEnabled: providerOptions.artifactsEnabled,

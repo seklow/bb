@@ -112,6 +112,7 @@ export interface ModelReasoningPickerHandoff {
 }
 
 const FAILED_TO_LOAD_MODELS_LABEL = "Failed to load models";
+const ULTRACODE_OPTION_ID = "ultracode";
 const EMPTY_MODEL_OPTIONS: readonly ModelPickerOption[] = [];
 const EMPTY_SERVICE_TIER_OPTIONS: readonly ProviderOptionDescriptor[] = [];
 const preserveModelLabel = (displayName: string): string => displayName;
@@ -358,6 +359,16 @@ export function ModelReasoningPicker({
     ? (selectedReasoningOption?.label ??
       (modelIsLoading ? reasoningLevelLabel(reasoningValue, undefined) : null))
     : null;
+  const levelAgentSections =
+    reasoningValue === "ultracode"
+      ? agentSections.filter((section) => section.id !== ULTRACODE_OPTION_ID)
+      : agentSections;
+  const ultracodeIsOn = levelAgentSections.some(
+    (section) =>
+      section.id === ULTRACODE_OPTION_ID &&
+      section.items.some((item) => item.selected && item.value === true),
+  );
+  const triggerUltracodeSuffix = ultracodeIsOn ? " · Ultracode" : "";
 
   const isPreviewing =
     previewProviderId !== null && previewProviderId !== selectedProviderId;
@@ -928,7 +939,9 @@ export function ModelReasoningPicker({
       : triggerModelLabel;
   const triggerTitle = [
     `${selectedProviderLabel}: ${triggerTitleModelLabel}`,
-    triggerReasoningLabel ? ` · ${triggerReasoningLabel} reasoning` : "",
+    triggerReasoningLabel
+      ? ` · ${triggerReasoningLabel} reasoning${triggerUltracodeSuffix}`
+      : "",
     selectedServiceTierOption
       ? ` (${selectedServiceTierOption.label} mode)`
       : "",
@@ -1011,6 +1024,7 @@ export function ModelReasoningPicker({
                 data-promptbox-hide-compact=""
               >
                 {triggerReasoningLabel}
+                {triggerUltracodeSuffix}
               </span>
             ) : null}
           </>
@@ -1167,7 +1181,9 @@ export function ModelReasoningPicker({
           serviceTierOptions={activeServiceTierOptions}
           serviceTierValue={serviceTierValue}
           onServiceTierChange={onServiceTierChange}
-          agentSections={isPreviewing ? NO_AGENT_SECTIONS : agentSections}
+          agentSections={
+            isPreviewing || handoffMode ? NO_AGENT_SECTIONS : levelAgentSections
+          }
           onAgentOptionChange={onAgentOptionChange}
           onStartHandoff={
             handoff !== undefined && !handoffMode && providerOptions.length > 0

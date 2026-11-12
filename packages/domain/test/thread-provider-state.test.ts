@@ -6,7 +6,7 @@ import {
   describeSessionOptionConflict,
   effectiveSessionOptionSelections,
   modelSessionOptionConflict,
-  pendingSessionOptionSelections,
+  retainedSessionOptionSelections,
   type ThreadSessionOption,
 } from "../src/thread-provider-state.js";
 
@@ -27,14 +27,14 @@ const options: ThreadSessionOption[] = [
 describe("session option selections", () => {
   it("keeps only choices the agent still offers and has not applied yet", () => {
     expect(
-      pendingSessionOptionSelections(options, {
+      retainedSessionOptionSelections(options, {
         mode: "build",
         web: false,
         gone: "anything",
       }),
     ).toEqual({ mode: "build" });
     expect(
-      pendingSessionOptionSelections(options, { mode: "yolo", web: "true" }),
+      retainedSessionOptionSelections(options, { mode: "yolo", web: "true" }),
     ).toEqual({});
   });
 
@@ -53,6 +53,50 @@ describe("session option selections", () => {
         patch: { mode: "plan", web: null },
       }),
     ).toEqual({ ok: true, selections: {} });
+  });
+
+  describe("sticky options", () => {
+    const ultracode = (value: boolean): ThreadSessionOption => ({
+      type: "boolean",
+      id: "ultracode",
+      label: "Ultracode",
+      value,
+      experimental_sticky: true,
+    });
+
+    it("keeps an applied sticky choice to resend", () => {
+      expect(
+        retainedSessionOptionSelections([...options, ultracode(true)], {
+          mode: "build",
+          web: false,
+          ultracode: true,
+        }),
+      ).toEqual({ mode: "build", ultracode: true });
+    });
+
+    it("drops a sticky choice once the agent stops reporting the option", () => {
+      expect(
+        retainedSessionOptionSelections(options, { ultracode: true }),
+      ).toEqual({});
+    });
+
+    it("stores a sticky choice equal to the reported value, and clears it on request", () => {
+      const reported = [...options, ultracode(true)];
+      expect(
+        applySessionOptionSelectionPatch({
+          options: reported,
+          selections: {},
+          patch: { ultracode: true, web: false },
+        }),
+      ).toEqual({ ok: true, selections: { ultracode: true } });
+      expect(
+        applySessionOptionSelectionPatch({
+          options: reported,
+          selections: { ultracode: true },
+          patch: { ultracode: null },
+        }),
+      ).toEqual({ ok: true, selections: {} });
+    });
   });
 
   it("explains which options and values exist when a patch names one that does not", () => {
@@ -94,7 +138,11 @@ describe("session option selections", () => {
         selections: {},
         patch: { mode: "plan" },
       }),
-    ).toMatchObject({ ok: false });
+    ).toEqual({
+      ok: false,
+      message:
+        'This thread\'s agent has no session options available right now, so "mode" cannot be set.',
+    });
   });
 
   it("lets a provider write the live state kinds but not the server's selection kind", () => {

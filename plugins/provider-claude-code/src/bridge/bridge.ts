@@ -5,6 +5,7 @@ import { ClaudeContextUsageCollector } from "./context-usage.js";
 import { readIsolatedClaudeContextUsage } from "./context-usage-probe.js";
 
 import {
+  type AvailableModel,
   type PendingInteractionGrantedPermissionProfile,
   type PendingInteractionPayload,
   type PermissionEscalation,
@@ -56,6 +57,7 @@ import {
   buildClaudeTurnParams,
   type ClaudeCodeSkillRoot,
 } from "../session-params.js";
+import { claudeUltracodeOption, offersUltracode } from "../model-list.js";
 import {
   isBypassPermissionsAvailable,
   SdkSession,
@@ -64,7 +66,9 @@ import {
 import { MissingClaudeCliError } from "./missing-cli-error.js";
 import { claudeConfigDirectory, forkClaudeSession } from "./session-fork.js";
 import {
+  buildClaudeCodeCatalog,
   createClaudeCodeBridgeModelListMemo,
+  listAccountModels,
   listClaudeCodeBridgeModels,
 } from "./model-list.js";
 import {
@@ -254,6 +258,8 @@ interface ClaudeSessionRestart {
 interface ThreadSession {
   commandListGeneration: number;
   contextUsageCollector: ClaudeContextUsageCollector;
+  initModel: string | null;
+  modelCatalog: Promise<AvailableModel[] | null> | null;
   session: SdkSession;
   attachment: ThreadAttachment;
   sessionSerial: number;
@@ -285,6 +291,7 @@ interface ThreadAttachment {
   approvedPlanPermissionMode: ClaudePermissionMode;
   providerThreadId?: string;
   publishedProviderCommands: string | null;
+  publishedSessionOptions: string | null;
   sessionPermissionGrants: ClaudeSessionPermissionGrant[];
   threadIdRef: ThreadIdRef;
 }
@@ -317,6 +324,7 @@ interface SessionConstructionConfig {
     | "model"
     | "reasoningLevel"
     | "serviceTier"
+    | "ultracode"
     | "workflowsEnabled"
   >;
 }
@@ -329,6 +337,7 @@ interface ClaudeLiveSessionSettings {
   providerSubagentsEnabled: boolean;
   reasoningLevel?: ReasoningLevel;
   serviceTier: ServiceTier;
+  ultracode: boolean;
   workflowsEnabled: boolean;
 }
 
@@ -428,6 +437,7 @@ function requireSkillPluginsRoot(): string {
 }
 
 const THREAD_STOP_CLOSE_TIMEOUT_MS = 4_000;
+const SESSION_OPTIONS_STATE_KIND = "bb/session-options";
 const CLAUDE_CHROME_SETTING_RESTART_REASON = "Claude in Chrome setting changed";
 
 const { send, sendResult, sendError } = createBridgeIo<
@@ -837,6 +847,7 @@ async function applyLiveSessionSettings(
   if (current.model !== next.model) {
     threadSession.contextUsageCollector.invalidateCapacity();
     await threadSession.session.setModel(next.model);
+    threadSession.initModel = null;
     seedModelContextWindowHint(threadSession, threadId, next.model);
   }
 
@@ -844,6 +855,7 @@ async function applyLiveSessionSettings(
     current.memoryEnabled !== next.memoryEnabled ||
     current.reasoningLevel !== next.reasoningLevel ||
     current.serviceTier !== next.serviceTier ||
+    current.ultracode !== next.ultracode ||
     current.workflowsEnabled !== next.workflowsEnabled
   ) {
     await threadSession.session.applyMutableSettings({
@@ -855,6 +867,7 @@ async function applyLiveSessionSettings(
         memoryEnabled: next.memoryEnabled,
         reasoningLevel: next.reasoningLevel,
         workflowsEnabled: next.workflowsEnabled,
+        ultracode: next.ultracode,
         serviceTier: next.serviceTier,
       }),
     });
@@ -864,6 +877,7 @@ async function applyLiveSessionSettings(
     next.commandDescriptionsEnabled,
   );
   threadSession.attachment.liveSettings = next;
+  refreshSessionOptions(threadSession);
 }
 
 const PROVIDER_CATALOG_MEMO_TTL_MS = 2 * 60_000;
@@ -1098,6 +1112,7 @@ function toInitialLiveSessionSettings(
       ? { reasoningLevel: params.reasoningLevel }
       : {}),
     serviceTier: params.serviceTier,
+    ultracode: params.ultracode,
     workflowsEnabled: params.workflowsEnabled,
   };
 }
@@ -1119,6 +1134,7 @@ function withTurnLiveSessionSettings(
       params.providerSubagentsEnabled ?? current.providerSubagentsEnabled,
     ...(reasoningLevel !== undefined ? { reasoningLevel } : {}),
     serviceTier: params.serviceTier ?? current.serviceTier,
+    ultracode: params.ultracode,
     workflowsEnabled: params.workflowsEnabled ?? current.workflowsEnabled,
   };
 }
@@ -1153,6 +1169,7 @@ function createThreadAttachment(
       ? { providerThreadId: args.providerThreadId }
       : {}),
     publishedProviderCommands: null,
+    publishedSessionOptions: null,
     sessionPermissionGrants: [],
     threadIdRef: args.threadIdRef,
   };
@@ -1191,6 +1208,8 @@ function createThreadSession(attachment: ThreadAttachment): ThreadSession {
   const threadSession: ThreadSession = {
     commandListGeneration: 0,
     contextUsageCollector: new ClaudeContextUsageCollector(),
+    initModel: null,
+    modelCatalog: null,
     session,
     attachment,
     sessionSerial,
@@ -1575,31 +1594,42 @@ function getCurrentThreadSession(
   return threadSession;
 }
 
+type ExtensionStateDelta = Extract<ThreadDelta, { kind: "extension.state" }>;
+
+function publishExtensionState(
+  threadSession: ThreadSession,
+  field: "publishedProviderCommands" | "publishedSessionOptions",
+  extensionKind: ExtensionStateDelta["extensionKind"],
+  payload: ExtensionStateDelta["payload"],
+): void {
+  const { attachment } = threadSession;
+  const serialized = JSON.stringify(payload);
+  if (threadSession.closing || attachment[field] === serialized) {
+    return;
+  }
+  attachment[field] = serialized;
+  sendThreadDeltas(attachment.threadIdRef.current, [
+    { kind: "extension.state", extensionKind, payload },
+  ]);
+}
+
 function publishProviderCommands(
   threadSession: ThreadSession,
   commands: unknown,
 ): void {
-  if (threadSession.closing) {
-    return;
-  }
   const state = toProviderCommandsState(commands);
-  const serialized = JSON.stringify(state);
-  const { attachment } = threadSession;
   if (
-    attachment.publishedProviderCommands === serialized ||
-    (attachment.publishedProviderCommands === null &&
-      state.commands.length === 0)
+    threadSession.attachment.publishedProviderCommands === null &&
+    state.commands.length === 0
   ) {
     return;
   }
-  attachment.publishedProviderCommands = serialized;
-  sendThreadDeltas(attachment.threadIdRef.current, [
-    {
-      kind: "extension.state",
-      extensionKind: PROVIDER_COMMANDS_STATE_KIND,
-      payload: state,
-    },
-  ]);
+  publishExtensionState(
+    threadSession,
+    "publishedProviderCommands",
+    PROVIDER_COMMANDS_STATE_KIND,
+    state,
+  );
 }
 
 function refreshProviderCommands(threadSession: ThreadSession): void {
@@ -1613,6 +1643,68 @@ function refreshProviderCommands(threadSession: ThreadSession): void {
     },
     () => {},
   );
+}
+
+function loadSessionModelCatalog(
+  threadSession: ThreadSession,
+): Promise<AvailableModel[] | null> {
+  threadSession.modelCatalog ??= (async () => {
+    try {
+      const [models, accountModels] = await Promise.all([
+        threadSession.session.supportedModels(),
+        listAccountModels(threadSession.attachment.sessionOptions.env ?? {}),
+      ]);
+      if (models.length > 0) {
+        const catalog = buildClaudeCodeCatalog(models, accountModels);
+        return [...catalog.models, ...catalog.selectedOnlyModels];
+      }
+    } catch (error) {
+      logBridgeError(
+        `Loading the Claude model catalog failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    threadSession.modelCatalog = null;
+    return null;
+  })();
+  return threadSession.modelCatalog;
+}
+
+function publishSessionOptions(
+  threadSession: ThreadSession,
+  ultracodeOffered: boolean,
+): void {
+  const { ultracode } = threadSession.attachment.liveSettings;
+  publishExtensionState(
+    threadSession,
+    "publishedSessionOptions",
+    SESSION_OPTIONS_STATE_KIND,
+    { options: ultracodeOffered ? [claudeUltracodeOption(ultracode)] : [] },
+  );
+}
+
+function refreshSessionOptions(threadSession: ThreadSession): void {
+  if (threadSession.closing) {
+    return;
+  }
+  if (!threadSession.attachment.liveSettings.workflowsEnabled) {
+    publishSessionOptions(threadSession, false);
+    return;
+  }
+  void loadSessionModelCatalog(threadSession).then((catalog) => {
+    const { model, workflowsEnabled } = threadSession.attachment.liveSettings;
+    const runningModel =
+      threadSession.initModel ??
+      (model === undefined || model === "default" ? null : model);
+    const entry = catalog?.find(
+      (candidate) => candidate.model === runningModel,
+    );
+    if (entry !== undefined) {
+      publishSessionOptions(
+        threadSession,
+        workflowsEnabled && offersUltracode(entry.supportedReasoningEfforts),
+      );
+    }
+  });
 }
 
 function createOnSdkMessage(
@@ -1654,6 +1746,10 @@ function createOnSdkMessage(
     });
     if (message.type === "system" && message.subtype === "init") {
       refreshProviderCommands(threadSession);
+      if (threadSession.initModel !== message.model) {
+        threadSession.initModel = message.model;
+        refreshSessionOptions(threadSession);
+      }
     } else if (
       message.type === "system" &&
       message.subtype === "commands_changed"
@@ -2437,11 +2533,15 @@ function attachThreadSession(
     threadIdRef,
   });
   threadAttachments.set(params.threadId, attachment);
-  startResidentThreadSession(attachment, resume ? providerThreadId : undefined);
+  const threadSession = startResidentThreadSession(
+    attachment,
+    resume ? providerThreadId : undefined,
+  );
 
   sendThreadIdentity(params.threadId, providerThreadId);
   sendSessionReset(params.threadId);
   sendResult(id, { providerThreadId, sessionRestorable: true });
+  refreshSessionOptions(threadSession);
 }
 
 async function handleThreadStart(

@@ -15,6 +15,7 @@ const threadSessionOptionBaseShape = {
   label: z.string().min(1),
   description: z.string().min(1).optional(),
   category: z.string().min(1).optional(),
+  experimental_sticky: z.boolean().optional(),
 };
 
 export const threadSessionOptionSchema = z.discriminatedUnion("type", [

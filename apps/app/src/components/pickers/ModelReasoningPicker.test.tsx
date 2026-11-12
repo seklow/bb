@@ -21,6 +21,7 @@ import type {
   SystemExecutionOptionsResponse,
   SystemProvidersQuery,
 } from "@bb/server-contract";
+import { useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { systemExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "@/lib/sdk";
@@ -1683,8 +1684,10 @@ describe("ModelReasoningPicker service tiers", () => {
             label: "Daybreak",
             description: null,
             category: null,
+            sticky: false,
             value: false,
             pendingValue: null,
+            chosenValue: null,
           },
           {
             type: "select",
@@ -1692,8 +1695,10 @@ describe("ModelReasoningPicker service tiers", () => {
             label: "Search depth",
             description: null,
             category: null,
+            sticky: false,
             value: "shallow",
             pendingValue: "deep",
+            chosenValue: "deep",
             values: [
               {
                 id: "shallow",
@@ -1706,6 +1711,7 @@ describe("ModelReasoningPicker service tiers", () => {
           },
         ],
         {},
+        [],
       ),
     });
     openPicker();
@@ -1837,5 +1843,132 @@ describe("ModelReasoningPicker service tiers", () => {
       await screen.findByRole("switch", { name: "Turbo mode" }),
     ).toBeTruthy();
     expect(screen.queryByRole("radiogroup", { name: "Speed" })).toBeNull();
+  });
+});
+
+describe("ModelReasoningPicker agent options by reasoning level and handoff", () => {
+  beforeAll(() => ModelReasoningMenu.preload());
+
+  function trigger(): HTMLElement {
+    return screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+  }
+
+  function booleanSections(
+    id: string,
+    label: string,
+    value: boolean,
+  ): SessionOptionMenuSection[] {
+    return buildSessionOptionMenuSections(
+      [
+        {
+          type: "boolean",
+          id,
+          label,
+          description: null,
+          category: null,
+          sticky: false,
+          value,
+          pendingValue: null,
+          chosenValue: null,
+        },
+      ],
+      {},
+      [],
+    );
+  }
+
+  const ultracodeLadder: PickerOption<ReasoningLevel>[] = [
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    { value: "ultracode", label: "Ultracode" },
+    { value: "max", label: "Max" },
+  ];
+
+  it.each([
+    ["ultracode", true, "Ultracode", false],
+    ["max", true, "Max · Ultracode", true],
+    ["max", false, "Max", true],
+  ] as const)(
+    "at level %s with Ultracode %s the trigger reads %s, and the switch shows: %s",
+    (reasoningValue, on, label, switchShown) => {
+      renderPicker({
+        selectedProviderId: "claude-code",
+        modelOptions: [{ value: "claude-opus-4-7", label: "Claude Opus 4.7" }],
+        pickerReasoningOptions: ultracodeLadder,
+        reasoningValue,
+        agentSections: booleanSections("ultracode", "Ultracode", on),
+      });
+      expect(
+        trigger().querySelector("[data-promptbox-hide-compact]")?.textContent,
+      ).toBe(label);
+      fireEvent.click(trigger());
+      expect(screen.queryByRole("switch", { name: "Ultracode" }) !== null).toBe(
+        switchShown,
+      );
+    },
+  );
+
+  it("keeps focus in the drawer after the focused Ultracode switch hides at the ultracode level", async () => {
+    function LevelPicker() {
+      const [level, setLevel] = useState<ReasoningLevel>("max");
+      return (
+        <ModelReasoningPicker
+          providerOptions={providerOptions}
+          selectedProviderId="claude-code"
+          hasMultipleProviders
+          modelValue="claude-opus-4-7"
+          modelOptions={[
+            { value: "claude-opus-4-7", label: "Claude Opus 4.7" },
+          ]}
+          onModelChange={vi.fn()}
+          reasoningValue={level}
+          reasoningOptions={ultracodeLadder}
+          onReasoningChange={setLevel}
+          serviceTierValue={undefined}
+          serviceTierOptions={[]}
+          onServiceTierChange={vi.fn()}
+          agentSections={booleanSections("ultracode", "Ultracode", false)}
+        />
+      );
+    }
+    render(
+      <CompactViewportOverrideProvider isCompactViewport>
+        <LevelPicker />
+      </CompactViewportOverrideProvider>,
+      { wrapper: createQueryClientTestHarness().wrapper },
+    );
+    fireEvent.click(trigger());
+    const ultracode = await screen.findByRole("switch", { name: "Ultracode" });
+    ultracode.focus();
+
+    fireEvent.keyDown(ultracode, { key: "ArrowLeft" });
+    expect(screen.queryByRole("switch", { name: "Ultracode" })).toBeNull();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("dialog", { name: "Model" }),
+      ),
+    );
+  });
+
+  it("hides agent options in handoff mode, also after browsing back to the current provider", async () => {
+    renderPicker({
+      handoff: {
+        sourceProviderId: "codex",
+        active: false,
+        onStart: vi.fn(),
+        onExit: vi.fn(),
+        onSelect: vi.fn(),
+      },
+      agentSections: booleanSections("daybreak", "Daybreak", false),
+    });
+    fireEvent.click(trigger());
+    expect(screen.queryByRole("switch", { name: "Daybreak" })).not.toBeNull();
+    fireEvent.click(screen.getByTitle("Claude Code"));
+    await screen.findByText("Opus 4.7");
+    fireEvent.click(screen.getByTitle("Codex (current thread)"));
+    expect(screen.getByRole("button", { name: "Exit handoff" })).not.toBeNull();
+    expect(screen.queryByRole("switch", { name: "Daybreak" })).toBeNull();
   });
 });

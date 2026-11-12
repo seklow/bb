@@ -10,7 +10,7 @@ import {
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 import { installFakeGitWorktreeProvider } from "../helpers/environment-provider.js";
-import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
+import { resolveRetainedThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { availableModelFixture } from "../helpers/available-models.js";
 import { registerProviderHostRpcResponder } from "../helpers/host-rpc.js";
 
@@ -54,7 +54,7 @@ function registerDaybreakCatalog(
   });
 }
 
-async function startedModel(harness: TestAppHarness, response: Response) {
+async function startOptions(harness: TestAppHarness, response: Response) {
   expect(response.status).toBe(201);
   const thread = threadSchema.parse(await readJson(response));
   const start = await waitForQueuedCommand(
@@ -62,9 +62,11 @@ async function startedModel(harness: TestAppHarness, response: Response) {
     ({ command }) =>
       command.type === "thread.start" && command.threadId === thread.id,
   );
-  return start.command.type === "thread.start"
-    ? start.command.options.model
-    : null;
+  return start.command.type === "thread.start" ? start.command.options : null;
+}
+
+async function startedModel(harness: TestAppHarness, response: Response) {
+  return (await startOptions(harness, response))?.model ?? null;
 }
 
 async function createThread(
@@ -72,8 +74,10 @@ async function createThread(
   args: {
     hostId: string;
     projectId: string;
+    providerId?: string;
     sessionOptions?: unknown;
     model?: string | null;
+    reasoningLevel?: string;
   },
 ) {
   return harness.app.request("/api/v1/threads", {
@@ -82,8 +86,11 @@ async function createThread(
     body: JSON.stringify({
       origin: "app",
       projectId: args.projectId,
-      providerId: "codex",
+      providerId: args.providerId ?? "codex",
       ...(args.model === null ? {} : { model: args.model ?? "gpt-5" }),
+      ...(args.reasoningLevel === undefined
+        ? {}
+        : { reasoningLevel: args.reasoningLevel }),
       input: [{ type: "text", text: "Start with my options" }],
       ...(args.sessionOptions === undefined
         ? {}
@@ -148,9 +155,9 @@ describe("session options chosen when a thread is created", () => {
           ? start.command.options.sessionOptions
           : null,
       ).toEqual({ daybreak: true, mode: "plan" });
-      expect(resolvePendingThreadSessionOptions(harness.db, thread.id)).toEqual(
-        { daybreak: true, mode: "plan" },
-      );
+      expect(
+        resolveRetainedThreadSessionOptions(harness.db, thread.id),
+      ).toEqual({ daybreak: true, mode: "plan" });
     });
   });
 
@@ -282,6 +289,70 @@ describe("session options chosen when a thread is created", () => {
           }),
         ),
       ).toBe("gpt-unlisted");
+    });
+  });
+
+  it("spawn with ultracode=true refuses a model whose option is fixed off, and starts one that offers it at max", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session, project } = seedWorkspace(
+        harness,
+        "create-ultracode",
+      );
+      const claudeModel = (model: string, xhigh: boolean) => ({
+        ...availableModelFixture({
+          model,
+          reasoningLevels: xhigh
+            ? ["high", "xhigh", "ultracode", "max"]
+            : ["high", "max"],
+          isDefault: !xhigh,
+        }),
+        sessionOptions: [
+          {
+            type: "boolean" as const,
+            id: "ultracode",
+            label: "Ultracode",
+            value: false,
+            experimental_sticky: true,
+            ...(xhigh ? {} : { fixed: true }),
+          },
+        ],
+      });
+      registerProviderHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        restoreCommandCaptureAfterResponse: true,
+        modelsByProviderId: {
+          "claude-code": {
+            models: [
+              claudeModel("claude-plain", false),
+              claudeModel("claude-xhigh", true),
+            ],
+            selectedOnlyModels: [],
+          },
+        },
+      });
+      const spawn = (model: string) =>
+        createThread(harness, {
+          hostId: host.id,
+          projectId: project.id,
+          providerId: "claude-code",
+          model,
+          reasoningLevel: "max",
+          sessionOptions: { ultracode: true },
+        });
+
+      const refused = await spawn("claude-plain");
+      expect(refused.status).toBe(400);
+      expect(JSON.stringify(await readJson(refused))).toContain(
+        "claude-plain cannot run with the chosen options: Turn off Ultracode to use this model. claude-xhigh can.",
+      );
+      expect(
+        await startOptions(harness, await spawn("claude-xhigh")),
+      ).toMatchObject({
+        model: "claude-xhigh",
+        reasoningLevel: "max",
+        sessionOptions: { ultracode: true },
+      });
     });
   });
 });

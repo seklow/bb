@@ -38,6 +38,24 @@ with `bb plugin config provider-claude-code set <key> <value>`.
   subscription accounts need usage credits. It is billed at premium rates.
   The provider passes the selection as a session-scoped SDK setting, so it
   does not change the user's Claude defaults.
+- Ultracode is the `ultracode` session option, an on/off switch under the
+  reasoning levels in the model picker. It runs Claude Code's dynamic
+  workflows at any reasoning level. A thread offers it while
+  `workflowsDisabled` is `false` and its model offers Extra High. The
+  new-thread picker offers it from the model catalog, which does not check
+  `workflowsDisabled`, and while it is on, models without Extra High are
+  unavailable there. Use `bb thread spawn --option ultracode=true` or
+  `bb thread options <thread-id> --set ultracode=true`. `--set ultracode=false`
+  and `--clear ultracode`, which removes the choice, both leave it off at every
+  level except `ultracode`. `bb thread options` prints the stored choice beside
+  the value Claude reports. bb keeps the choice for the thread and sends it
+  again whenever Claude restarts, for example after an idle reap. The choice
+  is dropped when the thread moves to a model without Extra High or runs with
+  the Workflow tool disabled, including a thread spawned that way.
+- The `ultracode` reasoning level is Extra High with Ultracode on, whatever
+  the choice. The picker hides the switch at that level, and picking the level
+  neither sets nor clears the choice, so another level brings the choice back.
+  Claude Code before 2.1.284 runs Ultracode only at Extra High.
 - `sandboxEnabled` defaults to `true`. In Accept Edits and Approve for me modes
   bb runs Claude Code's Bash commands in its sandbox. Set it to `false` to use
   Claude Code's own command approvals and sandbox settings instead. A change

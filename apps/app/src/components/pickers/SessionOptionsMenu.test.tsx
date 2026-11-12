@@ -11,6 +11,7 @@ import {
   sessionOptionViewSelections,
   sessionOptionsTriggerLabel,
   splitSessionOptionsByPlacement,
+  type SessionOptionChoices,
 } from "./SessionOptionsMenu";
 
 const mode: ThreadTimelineSessionOption = {
@@ -19,8 +20,10 @@ const mode: ThreadTimelineSessionOption = {
   label: "Mode",
   description: "How the agent works",
   category: "mode",
+  sticky: false,
   value: "agent",
   pendingValue: null,
+  chosenValue: null,
   values: [
     { id: "agent", label: "Agent", description: null, group: null },
     { id: "plan", label: "Plan", description: "Read only", group: null },
@@ -32,8 +35,21 @@ const web: ThreadTimelineSessionOption = {
   label: "Web search",
   description: null,
   category: null,
+  sticky: false,
   value: false,
   pendingValue: null,
+  chosenValue: null,
+};
+const ultracode: ThreadTimelineSessionOption = {
+  type: "boolean",
+  id: "ultracode",
+  label: "Ultracode",
+  description: null,
+  category: null,
+  sticky: true,
+  value: true,
+  pendingValue: null,
+  chosenValue: null,
 };
 
 afterEach(() => {
@@ -50,10 +66,23 @@ describe("session option placement", () => {
 
   it("reads the value each option will have on the next turn", () => {
     expect(
-      sessionOptionViewSelections([{ ...mode, pendingValue: "plan" }, web], {
-        web: true,
-      }),
+      sessionOptionViewSelections(
+        [{ ...mode, pendingValue: "plan", chosenValue: "plan" }, web],
+        { web: true },
+      ),
     ).toEqual({ mode: "plan", web: true });
+  });
+
+  it("reads a sticky option only from a stored or local choice", () => {
+    expect(
+      sessionOptionViewSelections(
+        [ultracode, { ...ultracode, id: "kept", chosenValue: true }],
+        {},
+      ),
+    ).toEqual({ kept: true });
+    expect(
+      sessionOptionViewSelections([ultracode], { ultracode: false }),
+    ).toEqual({ ultracode: false });
   });
 });
 
@@ -106,33 +135,74 @@ describe("declared session option views", () => {
         ?.value,
     ).toBe(false);
   });
+
+  it("shows a sticky option at the choice, else the selected model's default, else not at all", () => {
+    const declaredUltracode: ThreadSessionOption = {
+      type: "boolean",
+      id: "ultracode",
+      label: "Ultracode",
+      value: true,
+      experimental_sticky: true,
+    };
+    const shown = (
+      selections: SessionOptionChoices,
+      activeModelOptions: ThreadSessionOption[],
+    ) =>
+      buildSessionOptionMenuSections(
+        declaredSessionOptionViews(
+          [declaredUltracode],
+          selections,
+          activeModelOptions,
+        ),
+        selections,
+        activeModelOptions,
+      ).map((section) => [section.selectedLabel, section.appliesOnNextTurn]);
+    expect(shown({ ultracode: true }, [])).toEqual([["On", false]]);
+    expect(shown({}, [{ ...declaredUltracode, value: false }])).toEqual([
+      ["Off", false],
+    ]);
+    expect(shown({}, [])).toEqual([]);
+  });
 });
 
 describe("session option menu sections", () => {
-  it("shows the local choice first, then the server's pending value, then the agent's value", () => {
-    const pendingMode = { ...mode, pendingValue: "plan" };
+  it("shows the local choice first, then the server's stored choice, then the agent's value", () => {
+    const pendingMode = { ...mode, pendingValue: "plan", chosenValue: "plan" };
     expect(
-      buildSessionOptionMenuSections([mode], {}).map((section) => [
+      buildSessionOptionMenuSections([mode], {}, []).map((section) => [
         section.selectedLabel,
         section.appliesOnNextTurn,
       ]),
     ).toEqual([["Agent", false]]);
     expect(
-      buildSessionOptionMenuSections([pendingMode], {}).map((section) => [
+      buildSessionOptionMenuSections([pendingMode], {}, []).map((section) => [
         section.selectedLabel,
         section.appliesOnNextTurn,
       ]),
     ).toEqual([["Plan", true]]);
     expect(
-      buildSessionOptionMenuSections([pendingMode], { mode: "agent" }).map(
+      buildSessionOptionMenuSections([pendingMode], { mode: "agent" }, []).map(
         (section) => [section.selectedLabel, section.appliesOnNextTurn],
       ),
     ).toEqual([["Agent", false]]);
   });
 
+  it("shows a sticky option's stored choice, else the model's default, and never the value the agent reports", () => {
+    const shown = (option: ThreadTimelineSessionOption) =>
+      buildSessionOptionMenuSections([option], {}, [
+        { type: "boolean", id: "ultracode", label: "Ultracode", value: false },
+      ]).map((section) => [section.selectedLabel, section.appliesOnNextTurn]);
+    expect(shown(ultracode)).toEqual([["Off", true]]);
+    expect(shown({ ...ultracode, chosenValue: true })).toEqual([["On", false]]);
+    expect(shown({ ...ultracode, sticky: false })).toEqual([["On", false]]);
+    expect(buildSessionOptionMenuSections([ultracode], {}, [])).toEqual([]);
+  });
+
   it("names the trigger after the agent's mode, a lone option, or nothing in particular", () => {
     const label = (options: ThreadTimelineSessionOption[]) =>
-      sessionOptionsTriggerLabel(buildSessionOptionMenuSections(options, {}));
+      sessionOptionsTriggerLabel(
+        buildSessionOptionMenuSections(options, {}, []),
+      );
     expect(label([web, mode])).toBe("Agent");
     expect(label([web])).toBe("Web search: Off");
     expect(label([web, { ...web, id: "brave", label: "Brave" }])).toBe(
@@ -142,9 +212,17 @@ describe("session option menu sections", () => {
 });
 
 describe("SessionOptionsMenu", () => {
-  it("renders nothing when the agent reports no options", () => {
+  it.each([
+    ["the agent reports no options", []],
+    ["every option is left out", [ultracode]],
+  ])("renders nothing when %s", (_case, options) => {
     const { container } = render(
-      <SessionOptionsMenu options={[]} choices={{}} onChange={vi.fn()} />,
+      <SessionOptionsMenu
+        options={options}
+        choices={{}}
+        modelOptions={[]}
+        onChange={vi.fn()}
+      />,
     );
     expect(container.innerHTML).toBe("");
   });
@@ -155,6 +233,7 @@ describe("SessionOptionsMenu", () => {
       <SessionOptionsMenu
         options={[mode, web]}
         choices={{}}
+        modelOptions={[]}
         onChange={onChange}
       />,
     );

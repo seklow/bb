@@ -1197,6 +1197,7 @@ const threadTimelineSessionOptionBaseShape = {
   label: z.string().min(1),
   description: z.string().nullable(),
   category: z.string().nullable(),
+  sticky: z.boolean(),
 };
 
 export const threadTimelineSessionOptionSchema = z.discriminatedUnion("type", [
@@ -1205,6 +1206,7 @@ export const threadTimelineSessionOptionSchema = z.discriminatedUnion("type", [
     type: z.literal("select"),
     value: z.string(),
     pendingValue: z.string().nullable(),
+    chosenValue: z.string().nullable(),
     values: z.array(
       z.object({
         id: z.string().min(1),
@@ -1219,6 +1221,7 @@ export const threadTimelineSessionOptionSchema = z.discriminatedUnion("type", [
     type: z.literal("boolean"),
     value: z.boolean(),
     pendingValue: z.boolean().nullable(),
+    chosenValue: z.boolean().nullable(),
   }),
 ]);
 export type ThreadTimelineSessionOption = z.infer<

@@ -1,10 +1,12 @@
 import type { ComposerSubmitExtras } from "@get-bb/plugin-sdk/internal/composer-handle";
 import type {
+  AvailableModel,
   PendingInteraction,
   PermissionMode,
   PromptTextMention,
   ResolvedThreadExecutionOptions,
   ThreadQueuedMessage,
+  ThreadSessionOption,
   ThreadTimelineActivePromptMode,
 } from "@bb/domain";
 import type {
@@ -15,10 +17,14 @@ import type { ReactNode } from "react";
 import { vi } from "vitest";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import type { TypeaheadConfig } from "@/components/promptbox/ComposerBox";
+import type { ExecutionControlsProps } from "@/components/promptbox/ExecutionControls";
 import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
 
 export const promptAreaMocks = {
   unknownReasoning: false,
+  activeModel: null as Pick<AvailableModel, "sessionOptions"> | null,
+  catalogSessionOptions: {} as Record<string, ThreadSessionOption[]>,
+  capturedExecution: null as ExecutionControlsProps | null,
   cancelThreadPlanMutateAsync: vi.fn(),
   createThreadMutateAsync: vi.fn(),
   defaultExecutionOptions: null as ResolvedThreadExecutionOptions | null,
@@ -130,38 +136,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         submitMode: { kind: string; reason?: string };
       } | null;
       environmentSummary?: ReactNode;
-      execution: {
-        providerRouting: { environmentId?: string; hostId?: string };
-        model: {
-          active?: { model: string } | null;
-          onChange?: (value: string) => void;
-        };
-        provider: {
-          selectedId: string;
-          onChange?: (value: string) => void;
-        };
-        handoff?: {
-          active: boolean;
-          onStart: () => void;
-          onExit: () => void;
-          onSelect: (selection: {
-            providerId: string;
-            model: string;
-            reasoningLevel: "medium";
-          }) => void;
-        };
-        reasoning: { value: string };
-        serviceTier?: { value?: string };
-        agentOptions?: {
-          sections: readonly {
-            id: string;
-            label: string;
-            selectedLabel: string;
-            appliesOnNextTurn: boolean;
-          }[];
-          onChange: (optionId: string, value: string | boolean) => void;
-        };
-      };
+      execution: ExecutionControlsProps;
       executionReadOnly?: boolean;
       pendingInteraction?: ReactNode;
       permission: { value?: string; onChange?: (value: "full") => void };
@@ -214,7 +189,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
           {execution.provider.selectedId}
         </div>
         <div data-testid="preview-environment">
-          {execution.providerRouting.environmentId}
+          {execution.providerRouting?.environmentId}
         </div>
         <div data-testid="command-suggestions">
           {`${typeahead.command.source.providerId}:${typeahead.command.source.commandScope}`}
@@ -309,6 +284,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
               type="button"
               onClick={() => {
                 promptAreaMocks.pluginComposerHost = pluginComposerHost;
+                promptAreaMocks.capturedExecution = execution;
                 promptAreaMocks.composerSubmit = composer?.onSubmit ?? null;
                 promptAreaMocks.composerModifierSubmit =
                   composer?.onModifierSubmit ?? null;
@@ -574,6 +550,7 @@ vi.mock("@/hooks/usePromptMentions", async () =>
 vi.mock("@/hooks/useThreadCreationOptions", async () => {
   const { useState } = await import("react");
   return {
+    formatModelLabel: (displayName: string) => displayName,
     useThreadCreationOptions: (options: {
       initialProviderId: string;
       initialPermissionMode?: PermissionMode;
@@ -585,7 +562,7 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
       const [explicitModel, setExplicitModel] = useState<string | null>(null);
       const isClaude = selectedProviderId === "claude-code";
       return {
-        activeModel: null,
+        activeModel: promptAreaMocks.activeModel,
         executionInputSources: promptAreaMocks.executionInputSources,
         executionOptionsRouting: { hostId: "host_1" },
         providers: [],
@@ -613,6 +590,8 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
           reasoningLevel,
           reasoningOptions: [{ value: reasoningLevel, label: reasoningLevel }],
         }),
+        sessionOptionsForModel: (model: string) =>
+          promptAreaMocks.catalogSessionOptions[model] ?? [],
         selectedModel: explicitModel ?? (isClaude ? "claude-opus-5" : "gpt-5"),
         selectedProviderComposerActions: [],
         selectedProviderDisplayName: isClaude ? "Claude Code" : "Codex",

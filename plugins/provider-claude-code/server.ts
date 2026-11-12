@@ -102,7 +102,7 @@ export default function plugin(bb: BbPluginApi) {
       {
         id: "ultracode",
         label: "Ultracode",
-        description: "Extra-high effort plus standing workflow orchestration.",
+        description: "Extra High with Ultracode on.",
       },
       { id: "max", label: "Max" },
     ],

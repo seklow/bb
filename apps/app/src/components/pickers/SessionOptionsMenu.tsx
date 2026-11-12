@@ -47,15 +47,29 @@ export interface SessionOptionMenuSection {
   items: SessionOptionMenuItem[];
 }
 
+function chosenSessionOptionValue(
+  option: ThreadTimelineSessionOption,
+  choices: SessionOptionChoices,
+): SessionOptionChoice | null {
+  return Object.hasOwn(choices, option.id)
+    ? choices[option.id]
+    : option.chosenValue;
+}
+
 export function buildSessionOptionMenuSections(
   options: readonly ThreadTimelineSessionOption[],
   choices: SessionOptionChoices,
+  modelOptions: readonly ThreadSessionOption[],
 ): SessionOptionMenuSection[] {
-  return options.map((option) => {
-    const chosen = Object.hasOwn(choices, option.id)
-      ? choices[option.id]
-      : undefined;
-    const effective = chosen ?? option.pendingValue ?? option.value;
+  return options.flatMap((option) => {
+    const chosen = chosenSessionOptionValue(option, choices);
+    const effective = option.sticky
+      ? (chosen ??
+        modelOptions.find((candidate) => candidate.id === option.id)?.value)
+      : (chosen ?? option.value);
+    if (effective === undefined) {
+      return [];
+    }
     const items: SessionOptionMenuItem[] =
       option.type === "boolean"
         ? [
@@ -88,10 +102,12 @@ export function sessionOptionViewSelections(
 ): Record<string, SessionOptionChoice> {
   const selections: Record<string, SessionOptionChoice> = {};
   for (const option of options) {
-    selections[option.id] =
-      (Object.hasOwn(choices, option.id) ? choices[option.id] : undefined) ??
-      option.pendingValue ??
-      option.value;
+    const chosen = chosenSessionOptionValue(option, choices);
+    if (chosen !== null) {
+      selections[option.id] = chosen;
+    } else if (!option.sticky) {
+      selections[option.id] = option.value;
+    }
   }
   return selections;
 }
@@ -118,39 +134,29 @@ export function declaredSessionOptionViews(
   activeModelOptions: readonly ThreadSessionOption[],
 ): ThreadTimelineSessionOption[] {
   return declared.map((option) => {
-    const active = activeModelOptions.find(
-      (candidate) => candidate.id === option.id,
-    );
+    const effective = Object.hasOwn(selections, option.id)
+      ? selections[option.id]
+      : (activeModelOptions.find((candidate) => candidate.id === option.id)
+          ?.value ?? option.value);
     const base = {
       id: option.id,
       label: option.label,
       description: option.description ?? null,
       category: option.category ?? null,
+      sticky: option.experimental_sticky === true,
       pendingValue: null,
+      chosenValue: null,
     };
-    const selected = Object.hasOwn(selections, option.id)
-      ? selections[option.id]
-      : undefined;
     return option.type === "boolean"
       ? {
           ...base,
           type: "boolean",
-          value:
-            typeof selected === "boolean"
-              ? selected
-              : active?.type === "boolean"
-                ? active.value
-                : option.value,
+          value: typeof effective === "boolean" ? effective : option.value,
         }
       : {
           ...base,
           type: "select",
-          value:
-            typeof selected === "string"
-              ? selected
-              : active?.type === "select"
-                ? active.value
-                : option.value,
+          value: typeof effective === "string" ? effective : option.value,
           values: option.values.map((value) => ({
             id: value.id,
             label: value.label,
@@ -179,6 +185,7 @@ export function sessionOptionsTriggerLabel(
 interface SessionOptionsMenuProps {
   options: readonly ThreadTimelineSessionOption[];
   choices: SessionOptionChoices;
+  modelOptions: readonly ThreadSessionOption[];
   onChange: (optionId: string, value: SessionOptionChoice) => void;
   disabled?: boolean;
 }
@@ -186,13 +193,18 @@ interface SessionOptionsMenuProps {
 export function SessionOptionsMenu({
   options,
   choices,
+  modelOptions,
   onChange,
   disabled,
 }: SessionOptionsMenuProps) {
-  if (options.length === 0) {
+  const sections = buildSessionOptionMenuSections(
+    options,
+    choices,
+    modelOptions,
+  );
+  if (sections.length === 0) {
     return null;
   }
-  const sections = buildSessionOptionMenuSections(options, choices);
   const triggerLabel = sessionOptionsTriggerLabel(sections);
   const trigger = (
     <Button

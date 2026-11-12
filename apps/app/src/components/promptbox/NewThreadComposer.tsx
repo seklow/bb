@@ -60,7 +60,6 @@ import {
   declaredSessionOptionViews,
   SessionOptionsMenu,
   splitSessionOptionsByPlacement,
-  type SessionOptionChoices,
 } from "@/components/pickers/SessionOptionsMenu";
 import {
   NewThreadPromptBox,
@@ -189,8 +188,6 @@ interface NewThreadComposerSelectionState extends CommittedComposerState {
   changeServiceTier: (tier: ServiceTier | undefined) => void;
   changePermissionMode: (mode: PermissionMode) => void;
 }
-
-const NO_SESSION_OPTION_CHOICES: SessionOptionChoices = {};
 
 function readNewThreadComposerSelection(
   state: NewThreadComposerSelectionState,
@@ -993,9 +990,14 @@ export function NewThreadComposer({
     () =>
       buildSessionOptionMenuSections(
         placedSessionOptions.picker,
-        NO_SESSION_OPTION_CHOICES,
+        sessionOptionSelections,
+        activeModel?.sessionOptions ?? [],
       ),
-    [placedSessionOptions.picker],
+    [
+      activeModel?.sessionOptions,
+      placedSessionOptions.picker,
+      sessionOptionSelections,
+    ],
   );
   const providerIds = useMemo(
     () => providerOptions.map((option) => option.value),
@@ -2081,7 +2083,8 @@ export function NewThreadComposer({
               placedSessionOptions.footer.length === 0 ? null : (
                 <SessionOptionsMenu
                   options={placedSessionOptions.footer}
-                  choices={NO_SESSION_OPTION_CHOICES}
+                  choices={sessionOptionSelections}
+                  modelOptions={activeModel?.sessionOptions ?? []}
                   onChange={setSessionOption}
                 />
               ),
@@ -2256,6 +2259,7 @@ export function NewThreadComposer({
       serviceTierOptions,
       pickerSessionOptionSections,
       placedSessionOptions.footer,
+      sessionOptionSelections,
       setSessionOption,
     ],
   );

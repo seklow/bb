@@ -3,7 +3,7 @@ import {
   THREAD_SESSION_OPTIONS_STATE_KIND,
   THREAD_SESSION_OPTION_SELECTIONS_STATE_KIND,
   jsonValueSchema,
-  pendingSessionOptionSelections,
+  retainedSessionOptionSelections,
   type JsonValue,
   threadProviderCommandsStateSchema,
   threadSessionOptionSelectionsStateSchema,
@@ -78,7 +78,7 @@ export function extractThreadSessionOptions(
   const selections = threadSessionOptionSelectionsStateSchema.safeParse(
     latestStatePayload(events, THREAD_SESSION_OPTION_SELECTIONS_STATE_KIND),
   );
-  const pending = pendingSessionOptionSelections(
+  const chosen = retainedSessionOptionSelections(
     state.data.options,
     selections.success ? selections.data.selections : {},
   );
@@ -88,22 +88,26 @@ export function extractThreadSessionOptions(
       label: option.label,
       description: option.description ?? null,
       category: option.category ?? null,
+      sticky: option.experimental_sticky === true,
     };
-    const pendingValue = Object.hasOwn(pending, option.id)
-      ? pending[option.id]
+    const chosenValue = Object.hasOwn(chosen, option.id)
+      ? chosen[option.id]
       : null;
+    const pendingValue = chosenValue === option.value ? null : chosenValue;
     return option.type === "boolean"
       ? {
           ...base,
           type: "boolean",
           value: option.value,
           pendingValue: typeof pendingValue === "boolean" ? pendingValue : null,
+          chosenValue: typeof chosenValue === "boolean" ? chosenValue : null,
         }
       : {
           ...base,
           type: "select",
           value: option.value,
           pendingValue: typeof pendingValue === "string" ? pendingValue : null,
+          chosenValue: typeof chosenValue === "string" ? chosenValue : null,
           values: option.values.map((value) => ({
             id: value.id,
             label: value.label,

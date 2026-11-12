@@ -56,6 +56,20 @@ export function resolveModelReasoningLevel(
       );
 }
 
+export function findCatalogModel(
+  catalog: readonly AvailableModel[],
+  model: string,
+): AvailableModel | undefined {
+  const exact = catalog.find((candidate) => candidate.model === model);
+  if (exact !== undefined) {
+    return exact;
+  }
+  const prefixed = catalog.filter((candidate) =>
+    candidate.model.endsWith(`/${model}`),
+  );
+  return prefixed.length === 1 ? prefixed[0] : undefined;
+}
+
 function toModelPickerOption(
   model: AvailableModel,
   formatModelLabel: (displayName: string) => string,
@@ -93,16 +107,10 @@ export function resolveModelCatalogSelection({
     declaredSessionOptions,
     requestedSessionOptionSelections ?? {},
   );
-  const selectedModelSelection = (() => {
-    if (!rawSelectedModel) return rawSelectedModel;
-    if (fullCatalog.some((model) => model.model === rawSelectedModel)) {
-      return rawSelectedModel;
-    }
-    const prefixed = fullCatalog.filter((model) =>
-      model.model.endsWith(`/${rawSelectedModel}`),
-    );
-    return prefixed.length === 1 ? prefixed[0].model : rawSelectedModel;
-  })();
+  const selectedModelSelection = rawSelectedModel
+    ? (findCatalogModel(fullCatalog, rawSelectedModel)?.model ??
+      rawSelectedModel)
+    : rawSelectedModel;
 
   const availableModels = [...models];
   if (

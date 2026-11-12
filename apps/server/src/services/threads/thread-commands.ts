@@ -32,7 +32,7 @@ import {
   getLastProviderThreadId,
   requireDispatchableProviderThreadId,
 } from "./thread-events.js";
-import { resolvePendingThreadSessionOptions } from "./thread-session-options.js";
+import { resolveRetainedThreadSessionOptions } from "./thread-session-options.js";
 import type { ThreadForkDescriptor } from "./thread-startup-store.js";
 import {
   resolveThreadRuntimeCommandConfig,
@@ -221,7 +221,7 @@ function toRuntimeExecutionOptions(
       permissionMode,
       ...(promptMode !== undefined ? { promptMode } : {}),
     }) ?? {};
-  const sessionOptions = resolvePendingThreadSessionOptions(
+  const sessionOptions = resolveRetainedThreadSessionOptions(
     args.deps.db,
     args.threadId,
   );

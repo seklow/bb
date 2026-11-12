@@ -56,6 +56,7 @@ export const THREAD_SESSION_OPTION_SELECTIONS_STATE_KIND =
 
 export const threadSessionOptionSelectionsStateSchema = z.object({
   selections: sessionOptionSelectionsSchema,
+  stickyOptionIds: z.array(z.string().min(1)).optional(),
 });
 export type ThreadSessionOptionSelectionsState = z.infer<
   typeof threadSessionOptionSelectionsStateSchema
@@ -80,24 +81,24 @@ function sessionOptionAcceptsValue(
         option.values.some((candidate) => candidate.id === value);
 }
 
-export function pendingSessionOptionSelections(
+export function retainedSessionOptionSelections(
   options: readonly ThreadSessionOption[],
   selections: SessionOptionSelections,
 ): SessionOptionSelections {
-  const pending: SessionOptionSelections = {};
+  const retained: SessionOptionSelections = {};
   for (const option of options) {
     if (!Object.hasOwn(selections, option.id)) {
       continue;
     }
     const selected = selections[option.id];
     if (
-      selected !== option.value &&
+      (selected !== option.value || option.experimental_sticky === true) &&
       sessionOptionAcceptsValue(option, selected)
     ) {
-      pending[option.id] = selected;
+      retained[option.id] = selected;
     }
   }
-  return pending;
+  return retained;
 }
 
 export interface SessionOptionConflict {
@@ -243,7 +244,7 @@ export function applySessionOptionSelectionPatch(args: {
         ok: false,
         message:
           args.options.length === 0
-            ? `This thread's agent has not reported any session options, so "${optionId}" cannot be set.`
+            ? `This thread's agent has no session options available right now, so "${optionId}" cannot be set.`
             : `This thread's agent has no session option "${optionId}". Available options: ${args.options.map((candidate) => candidate.id).join(", ")}.`,
       };
     }
@@ -260,7 +261,7 @@ export function applySessionOptionSelectionPatch(args: {
   }
   return {
     ok: true,
-    selections: pendingSessionOptionSelections(args.options, next),
+    selections: retainedSessionOptionSelections(args.options, next),
   };
 }
 

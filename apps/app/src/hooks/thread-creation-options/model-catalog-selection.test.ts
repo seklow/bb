@@ -170,6 +170,17 @@ describe("resolveModelCatalogSelection with agent options", () => {
     expect(selection.selectedModel).toBe("astra");
   });
 
+  it("keeps offering a chosen option while a model without it is active, so the choice can still be turned off", () => {
+    const selection = selectWithDaybreak("custom", { daybreak: true }, [
+      daybreakModel("sol", { value: false, fixed: false }, true),
+      { ...model(["low", "high"], "high"), id: "custom", model: "custom" },
+    ]);
+    expect(selection.declaredSessionOptions.map((option) => option.id)).toEqual(
+      ["daybreak"],
+    );
+    expect(selection.sessionOptionSelections).toEqual({ daybreak: true });
+  });
+
   it("rules out a model that does not list the chosen value of a select option", () => {
     const depth = (values: string[]): AvailableModel["sessionOptions"] => [
       {

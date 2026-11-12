@@ -7,6 +7,7 @@ import type {
   PendingInteraction,
   PromptTextMention,
   ThreadQueuedMessage,
+  ThreadSessionOption,
   ThreadTimelineActivePromptMode,
   ThreadTimelineModelFallback,
   ThreadWithRuntime,
@@ -374,6 +375,9 @@ beforeEach(() => {
   mocks.defaultExecutionOptions = null;
   mocks.executionInputSources = {};
   mocks.unknownReasoning = false;
+  mocks.activeModel = null;
+  mocks.catalogSessionOptions = {};
+  mocks.capturedExecution = null;
   mocks.pluginComposerHost = null;
   mocks.composerSubmit = null;
   mocks.composerModifierSubmit = null;
@@ -449,8 +453,10 @@ describe("agent session options", () => {
     label: "Mode",
     description: null,
     category: "mode",
+    sticky: false,
     value: "agent",
     pendingValue: null,
+    chosenValue: null,
     values: [
       { id: "agent", label: "Agent", description: null, group: null },
       { id: "plan", label: "Plan", description: null, group: null },
@@ -495,8 +501,10 @@ describe("agent session options", () => {
           label: "Web search",
           description: null,
           category: null,
+          sticky: false,
           value: false,
           pendingValue: null,
+          chosenValue: null,
         },
       ],
     });
@@ -523,6 +531,122 @@ describe("agent session options", () => {
     );
   });
 
+  const ultracodeOption: ThreadTimelineSessionOption = {
+    type: "boolean",
+    id: "ultracode",
+    label: "Ultracode",
+    description: null,
+    category: null,
+    sticky: true,
+    value: true,
+    pendingValue: null,
+    chosenValue: null,
+  };
+  const ultracodeDeclaration: ThreadSessionOption = {
+    type: "boolean",
+    id: "ultracode",
+    label: "Ultracode",
+    value: false,
+    experimental_sticky: true,
+  };
+
+  it.each<[string, typeof mocks.catalogSessionOptions, string]>([
+    [
+      "the selected model's default",
+      { "gpt-5": [ultracodeDeclaration] },
+      "Ultracode: Off (next turn)",
+    ],
+    ["no row while the model catalog loads", {}, ""],
+    ["no row when the cached model declares no options", { "gpt-5": [] }, ""],
+  ])(
+    "shows a sticky option without a stored choice at %s, never at the value the agent reported",
+    (_case, catalogSessionOptions, shown) => {
+      mocks.catalogSessionOptions = catalogSessionOptions;
+      renderPromptArea({ sessionOptions: [ultracodeOption] });
+
+      expect(screen.getByTestId("picker-agent-options").textContent).toBe(
+        shown,
+      );
+      expect(mocks.useThreadCreationOptions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sessionOptionSelections: {} }),
+      );
+    },
+  );
+
+  it("shows no sticky row for a provider fallback model the catalog does not list", () => {
+    mocks.activeModel = { sessionOptions: [ultracodeDeclaration] };
+    mocks.catalogSessionOptions = { "gpt-5": [ultracodeDeclaration] };
+    renderPromptArea({
+      sessionOptions: [ultracodeOption],
+      modelFallback: {
+        sourceSeq: 42,
+        detectedAt: 123,
+        originalModel: "gpt-5",
+        fallbackModel: "gpt-unlisted-1",
+        reason: "refusal",
+        message: "Switched models.",
+      },
+    });
+
+    expect(screen.getByTestId("selected-model").textContent).toBe(
+      "gpt-unlisted-1",
+    );
+    expect(screen.getByTestId("picker-agent-options").textContent).toBe("");
+  });
+
+  it("builds the queued-message editor's agent options from the queued message's own model", () => {
+    mocks.catalogSessionOptions = {
+      "gpt-5": [ultracodeDeclaration],
+      "claude-opus-5": [],
+    };
+    mocks.queuedMessages = [makeQueuedMessage({ model: "claude-opus-5" })];
+    renderPromptArea({ sessionOptions: [ultracodeOption] });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit queued message 1" }),
+    );
+
+    const inlineEditor = screen.getByTestId("inline-queued-message-editor");
+    expect(
+      screen
+        .getAllByTestId("picker-agent-options")
+        .map((element) => [
+          inlineEditor.contains(element),
+          element.textContent,
+        ]),
+    ).toEqual([
+      [true, ""],
+      [false, "Ultracode: Off (next turn)"],
+    ]);
+  });
+
+  it("hands the queued-message editor's picker the queued message's own level and agent options", () => {
+    mocks.catalogSessionOptions = { "claude-opus-5": [ultracodeDeclaration] };
+    mocks.queuedMessages = [
+      makeQueuedMessage({
+        model: "claude-opus-5",
+        reasoningLevel: "ultracode",
+      }),
+    ];
+    renderPromptArea({ sessionOptions: [ultracodeOption] });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit queued message 1" }),
+    );
+    fireEvent.click(
+      within(screen.getByTestId("inline-queued-message-editor")).getByRole(
+        "button",
+        { name: "Capture plugin host" },
+      ),
+    );
+
+    expect(mocks.capturedExecution?.reasoning.value).toBe("ultracode");
+    expect(
+      mocks.capturedExecution?.agentOptions?.sections.map((section) => [
+        section.id,
+        section.selectedLabel,
+      ]),
+    ).toEqual([["ultracode", "Off"]]);
+  });
+
   it("shows no footer menu when the agent reports only picker options", () => {
     renderPromptArea({
       sessionOptions: [
@@ -532,8 +656,10 @@ describe("agent session options", () => {
           label: "Web search",
           description: null,
           category: null,
+          sticky: false,
           value: true,
           pendingValue: null,
+          chosenValue: null,
         },
       ],
     });

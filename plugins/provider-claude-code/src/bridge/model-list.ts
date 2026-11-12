@@ -115,6 +115,17 @@ export function preferAccountModels(
   ];
 }
 
+export function buildClaudeCodeCatalog(
+  cliModels: readonly ModelInfo[],
+  accountModels: readonly ModelInfo[] | null,
+): ReturnType<typeof buildClaudeCodeModels> {
+  return buildClaudeCodeModels(
+    accountModels === null
+      ? cliModels
+      : preferAccountModels(cliModels, accountModels),
+  );
+}
+
 async function probeClaudeCodeModels(env: NodeJS.ProcessEnv): Promise<{
   models: AvailableModel[];
   selectedOnlyModels: AvailableModel[];
@@ -127,11 +138,7 @@ async function probeClaudeCodeModels(env: NodeJS.ProcessEnv): Promise<{
     throw new Error("Claude Code reported no models.");
   }
   const accountModels = await listAccountModels(env);
-  return buildClaudeCodeModels(
-    accountModels === null
-      ? initialization.models
-      : preferAccountModels(initialization.models, accountModels),
-  );
+  return buildClaudeCodeCatalog(initialization.models, accountModels);
 }
 
 export async function listClaudeCodeBridgeModels(

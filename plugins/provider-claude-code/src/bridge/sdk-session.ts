@@ -3,6 +3,7 @@ import {
   query,
   type CanUseTool,
   type McpSdkServerConfigWithInstance,
+  type ModelInfo,
   type Options,
   type Query,
   type Settings,
@@ -205,6 +206,10 @@ export class SdkSession {
 
   async supportedCommands(): Promise<SlashCommand[]> {
     return this.query ? this.query.supportedCommands() : [];
+  }
+
+  async supportedModels(): Promise<ModelInfo[]> {
+    return this.query ? this.query.supportedModels() : [];
   }
 
   async setModel(model: string | undefined): Promise<void> {

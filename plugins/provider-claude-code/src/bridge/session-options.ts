@@ -27,6 +27,7 @@ export interface BuildSessionOptionsArgs {
   reasoningLevel?: ReasoningLevel;
   serviceTier: ServiceTier;
   workflowsEnabled: boolean;
+  ultracode: boolean;
   chromeEnabled: boolean;
   disable1MContext: boolean;
   artifactsEnabled: boolean;
@@ -83,7 +84,7 @@ function buildFlagSettings(params: BuildSessionOptionsArgs): Settings {
   return {
     autoMemoryEnabled: params.memoryEnabled ?? true,
     enableWorkflows: params.workflowsEnabled,
-    ultracode: params.reasoningLevel === "ultracode",
+    ultracode: params.ultracode,
     fastMode: params.serviceTier === "fast",
   };
 }
@@ -110,6 +111,7 @@ export function buildMutableFlagSettings(args: {
   memoryEnabled: boolean;
   reasoningLevel: ReasoningLevel | undefined;
   workflowsEnabled: boolean;
+  ultracode: boolean;
   serviceTier: ServiceTier;
 }): ClaudeMutableFlagSettings {
   const effortLevel =
@@ -120,7 +122,7 @@ export function buildMutableFlagSettings(args: {
     autoMemoryEnabled: args.memoryEnabled,
     enableWorkflows: args.workflowsEnabled,
     ...(effortLevel !== undefined ? { effortLevel } : {}),
-    ultracode: args.reasoningLevel === "ultracode",
+    ultracode: args.ultracode,
     fastMode: args.serviceTier === "fast",
   };
 }

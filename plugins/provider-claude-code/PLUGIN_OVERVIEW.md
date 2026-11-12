@@ -3,7 +3,7 @@ Start a thread, pick Claude Code, and let it work in your repository from bb. Th
 ## What you get
 
 - Permission modes `accept-edits`, `auto`, and `full`, plus a plan action in the composer.
-- Reasoning levels from Low to Max, plus Ultracode, which turns on multi-agent workflow orchestration.
+- Reasoning levels from Low to Max, plus an Ultracode switch that turns on dynamic workflow orchestration at any level on models that offer Extra High. The Ultracode level is Extra High with the switch on.
 - Checkpoint forks, manual compaction, and native questions from the agent.
 - Claude Code skills and provider-native CLAUDE.md or supported AGENTS.md files
   from your home directory and project.

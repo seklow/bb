@@ -28,6 +28,7 @@ import type {
   PendingInteraction,
   PromptInput,
   ThreadQueuedMessage,
+  ThreadSessionOption,
   ThreadTimelineActivePromptMode,
   ThreadTimelineModelFallback,
   ThreadTimelinePendingTodos,
@@ -660,14 +661,6 @@ export function ThreadDetailPromptArea({
           ),
     [isHandoffSelection, sessionOptionChoices.choices, sessionOptions],
   );
-  const pickerSessionOptionSections = useMemo(
-    () =>
-      buildSessionOptionMenuSections(
-        placedSessionOptions.picker,
-        sessionOptionChoices.choices,
-      ),
-    [placedSessionOptions.picker, sessionOptionChoices.choices],
-  );
   const {
     executionOptionsRouting,
     selectedProviderId,
@@ -694,6 +687,7 @@ export function ThreadDetailPromptArea({
     modelLoadError,
     reasoningOptions,
     resolveReasoningForModel,
+    sessionOptionsForModel,
     permissionModeOptions,
     supportsPermissionModeSelection,
     supportsServiceTier,
@@ -715,6 +709,24 @@ export function ThreadDetailPromptArea({
     initialPermissionMode: defaultExecutionOptions?.permissionMode,
     initialEnvironmentSelectionValue: thread.environmentId ?? undefined,
   });
+  const agentOptionsForModel = useCallback(
+    (modelSessionOptions: readonly ThreadSessionOption[]) => {
+      const sections = buildSessionOptionMenuSections(
+        placedSessionOptions.picker,
+        sessionOptionChoices.choices,
+        modelSessionOptions,
+      );
+      return isHandoffSelection || sections.length === 0
+        ? undefined
+        : { sections, onChange: sessionOptionChoices.choose };
+    },
+    [
+      isHandoffSelection,
+      placedSessionOptions.picker,
+      sessionOptionChoices.choices,
+      sessionOptionChoices.choose,
+    ],
+  );
   const isPermissionSnapshot = permissionPolicy === "snapshot";
   const permissionMode = isPermissionSnapshot
     ? (defaultExecutionOptions?.permissionMode ?? selectedPermissionMode)
@@ -736,6 +748,10 @@ export function ThreadDetailPromptArea({
   const effectiveSelectedModel = isFallbackModelActive
     ? modelFallback.fallbackModel
     : (activeModel?.model ?? selectedModel);
+  const effectiveModelSessionOptions = useMemo(
+    () => sessionOptionsForModel(effectiveSelectedModel),
+    [effectiveSelectedModel, sessionOptionsForModel],
+  );
   const handleModelChange = useCallback(
     (model: string) => {
       if (fallbackIdentity !== null) {
@@ -1583,18 +1599,11 @@ export function ThreadDetailPromptArea({
         onExit: exitHandoff,
         onSelect: handleHandoffSelect,
       },
-      ...(isHandoffSelection || pickerSessionOptionSections.length === 0
-        ? {}
-        : {
-            agentOptions: {
-              sections: pickerSessionOptionSections,
-              onChange: sessionOptionChoices.choose,
-            },
-          }),
+      agentOptions: agentOptionsForModel(effectiveModelSessionOptions),
     }),
     [
-      pickerSessionOptionSections,
-      sessionOptionChoices.choose,
+      agentOptionsForModel,
+      effectiveModelSessionOptions,
       effectiveSelectedModel,
       executionOptionsRouting,
       hasMultipleProviders,
@@ -1639,6 +1648,9 @@ export function ThreadDetailPromptArea({
     if (!inlineEditingQueuedMessage) return null;
     return {
       ...compactExecutionConfig,
+      agentOptions: agentOptionsForModel(
+        sessionOptionsForModel(inlineEditingQueuedMessage.model),
+      ),
       model: {
         ...compactExecutionConfig.model,
         active: { model: inlineEditingQueuedMessage.model },
@@ -1681,9 +1693,11 @@ export function ThreadDetailPromptArea({
       },
     };
   }, [
+    agentOptionsForModel,
     compactExecutionConfig,
     inlineEditingQueuedMessage,
     resolveReasoningForModel,
+    sessionOptionsForModel,
     updateInlineQueuedMessage,
   ]);
 
@@ -2306,6 +2320,7 @@ export function ThreadDetailPromptArea({
       <SessionOptionsMenu
         options={placedSessionOptions.footer}
         choices={sessionOptionChoices.choices}
+        modelOptions={effectiveModelSessionOptions}
         onChange={sessionOptionChoices.choose}
       />
     );

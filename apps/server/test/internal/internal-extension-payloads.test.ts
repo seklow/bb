@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { EXTENSION_PAYLOAD_MAX_BYTES } from "../../src/internal/extension-payloads.js";
 import { buildPluginProviderRegistration } from "../../src/services/providers/plugin-provider-registration.js";
-import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
+import { resolveRetainedThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import { validatePluginProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import { internalAuthHeaders } from "../helpers/commands.js";
 import { readJson } from "../helpers/json.js";
@@ -596,8 +596,10 @@ describe("extension kind ownership at ingest", () => {
           label: "Mode",
           description: null,
           category: "mode",
+          sticky: false,
           value: "plan",
           pendingValue: null,
+          chosenValue: null,
           values: [
             { id: "plan", label: "Plan", description: null, group: null },
             { id: "build", label: "Build", description: null, group: null },
@@ -664,7 +666,7 @@ describe("extension kind ownership at ingest", () => {
       expect((await patch({ mode: "build", web: true })).status).toBe(200);
       expect(await pendingValues()).toEqual({ mode: "build", web: true });
       expect(
-        resolvePendingThreadSessionOptions(harness.deps.db, thread.id),
+        resolveRetainedThreadSessionOptions(harness.deps.db, thread.id),
       ).toEqual({ mode: "build", web: true });
 
       expect((await patch({ web: null })).status).toBe(200);
@@ -675,7 +677,7 @@ describe("extension kind ownership at ingest", () => {
       ).toBe(200);
       expect(await pendingValues()).toEqual({ mode: null, web: null });
       expect(
-        resolvePendingThreadSessionOptions(harness.deps.db, thread.id),
+        resolveRetainedThreadSessionOptions(harness.deps.db, thread.id),
       ).toEqual({});
 
       expect(
@@ -695,6 +697,64 @@ describe("extension kind ownership at ingest", () => {
         "provider/unhandled",
       );
       expect(await pendingValues()).toEqual({ mode: null, web: null });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("shows a sticky choice the agent already applied apart from the value the agent reports", async () => {
+    const { harness, session, thread } = await setup();
+    try {
+      const patch = (sessionOptions: Record<string, unknown>) =>
+        harness.app.request(`/api/v1/threads/${thread.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionOptions }),
+        });
+      const ultracode = async () =>
+        (
+          threadTimelineResponseSchema.parse(
+            await readJson(
+              await harness.app.request(
+                `/api/v1/threads/${thread.id}/timeline`,
+              ),
+            ),
+          ).sessionOptions ?? []
+        ).map((option) => [
+          option.sticky,
+          option.value,
+          option.pendingValue,
+          option.chosenValue,
+        ]);
+
+      expect(
+        (
+          await post(harness, session.id, [
+            extensionStateEvent(
+              thread.id,
+              {
+                options: [
+                  {
+                    type: "boolean",
+                    id: "ultracode",
+                    label: "Ultracode",
+                    value: true,
+                    experimental_sticky: true,
+                  },
+                ],
+              },
+              "bb/session-options",
+            ),
+          ])
+        ).status,
+      ).toBe(200);
+      expect(await ultracode()).toEqual([[true, true, null, null]]);
+
+      expect((await patch({ ultracode: true })).status).toBe(200);
+      expect(await ultracode()).toEqual([[true, true, null, true]]);
+
+      expect((await patch({ ultracode: false })).status).toBe(200);
+      expect(await ultracode()).toEqual([[true, true, false, false]]);
     } finally {
       await harness.cleanup();
     }

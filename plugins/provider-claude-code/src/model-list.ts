@@ -13,6 +13,33 @@ import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 const CLAUDE_MODEL_ID_PATTERN =
   /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$/;
 
+export const CLAUDE_ULTRACODE_OPTION_ID = "ultracode";
+
+type ClaudeBooleanSessionOption = Extract<
+  NonNullable<AvailableModel["sessionOptions"]>[number],
+  { type: "boolean" }
+>;
+
+export function claudeUltracodeOption(
+  value: boolean,
+): ClaudeBooleanSessionOption {
+  return {
+    type: "boolean",
+    id: CLAUDE_ULTRACODE_OPTION_ID,
+    label: "Ultracode",
+    description:
+      "Dynamic workflows for substantive tasks, at any effort level.",
+    value,
+    experimental_sticky: true,
+  };
+}
+
+export function offersUltracode(
+  efforts: readonly ModelReasoningEffort[],
+): boolean {
+  return efforts.some((effort) => effort.reasoningEffort === "xhigh");
+}
+
 function deriveClaudeModelDisplayName(model: string): string | null {
   const match = CLAUDE_MODEL_ID_PATTERN.exec(model);
   if (!match) {
@@ -49,6 +76,7 @@ function buildModel(
   modelInfo: ModelInfo,
   model: string,
   displayName: string,
+  ultracodeDeclared: boolean,
 ): AvailableModel {
   const supportedReasoningEfforts = buildReasoningEfforts(modelInfo);
   const supportedLevels = supportedReasoningEfforts.map(
@@ -67,6 +95,15 @@ function buildModel(
     reasoningDiscovery: "known",
     supportedReasoningEfforts,
     defaultReasoningEffort,
+    ...(ultracodeDeclared
+      ? {
+          sessionOptions: [
+            offersUltracode(supportedReasoningEfforts)
+              ? claudeUltracodeOption(false)
+              : { ...claudeUltracodeOption(false), fixed: true },
+          ],
+        }
+      : {}),
     isDefault: false,
   };
 }
@@ -82,6 +119,9 @@ export function buildClaudeCodeModels(
   const defaultModel =
     discoveredModels.find((modelInfo) => modelInfo.value === "default")
       ?.resolvedModel ?? null;
+  const ultracodeDeclared = discoveredModels.some((modelInfo) =>
+    modelInfo.supportedEffortLevels?.includes("xhigh"),
+  );
   const models: AvailableModel[] = [];
   for (const modelInfo of [
     ...discoveredModels.filter((candidate) => candidate.value !== "default"),
@@ -96,6 +136,7 @@ export function buildClaudeCodeModels(
         modelInfo,
         model,
         deriveClaudeModelDisplayName(model) ?? modelInfo.displayName,
+        ultracodeDeclared,
       ),
     );
   }
@@ -110,7 +151,12 @@ export function buildClaudeCodeModels(
       continue;
     }
     selectedOnlyModels.push(
-      buildModel(modelInfo, alias, `${modelInfo.displayName} alias`),
+      buildModel(
+        modelInfo,
+        alias,
+        `${modelInfo.displayName} alias`,
+        ultracodeDeclared,
+      ),
     );
   }
   const resolvedDefault =

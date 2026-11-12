@@ -104,6 +104,18 @@ or forked provider sessions. Claude Code plugin settings (`disable1MContext`,
 `bb plugin config provider-claude-code set <key> <value>` and documented in the
 claude-code-provider skill.
 
+Claude Code's Ultracode is the `ultracode` session option, an on/off switch
+that runs its dynamic workflows at any reasoning level. It is offered on models
+with Extra High while the Workflow tool is enabled. Set it with
+`bb thread spawn --option ultracode=true` or
+`bb thread options <id> --set ultracode=true`; bb keeps the choice for the
+thread and sends it again whenever Claude restarts, and
+`bb thread options <id> --clear ultracode` removes it. bb drops the choice when
+the thread moves to a model without Extra High or runs with the Workflow tool
+disabled, and a fork starts without it. The `ultracode` reasoning level is
+Extra High with Ultracode on whatever the choice. The claude-code-provider
+skill covers the details.
+
 Automatic retries after provider overloads, server or connection errors, and
 subscription-window limits come from the bundled Provider retry plugin
 (`bb provider-retry status`); see `bb guide plugins`. For a manual retry of a

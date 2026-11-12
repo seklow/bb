@@ -94,15 +94,21 @@ export function formatThreadProviderCommands(
 export function formatThreadSessionOptions(
   options: readonly ThreadTimelineSessionOption[] | null,
 ): string[] {
-  if (options === null || options.length === 0) {
+  if (options === null) {
     return ["The agent has not reported any session options for this thread."];
   }
+  if (options.length === 0) {
+    return ["The agent has no session options available right now."];
+  }
   return options.flatMap((option) => {
-    const pending =
-      option.pendingValue === null
+    const choice = option.sticky
+      ? option.chosenValue === null
+        ? ""
+        : ` (your choice: ${String(option.chosenValue)})`
+      : option.pendingValue === null
         ? ""
         : ` -> ${String(option.pendingValue)} on the next turn`;
-    const heading = `${option.id} (${option.label}): ${String(option.value)}${pending}`;
+    const heading = `${option.id} (${option.label}): ${String(option.value)}${choice}`;
     if (option.type === "boolean") {
       return [heading];
     }
@@ -155,7 +161,7 @@ export function registerSessionStateCommands(
     )
     .option(
       "--clear <option>",
-      "Drop a choice that has not been applied yet (repeatable)",
+      'Drop a choice; a choice lasts until applied, one shown as "your choice" until cleared or the option goes away (repeatable)',
       collectRepeated,
     )
     .option("--json", "Print machine-readable JSON output")

@@ -1104,9 +1104,16 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(submitted[0]?.executionInputSources.providerId).toBe("explicit");
   });
 
-  it("puts declared agent options in the picker, keeps the mode in the footer and submits what the user chose", async () => {
+  it("puts declared agent options in the picker, keeps the mode in the footer and submits only what the user chose", async () => {
     mocks.modelSessionOptions = [
       { type: "boolean", id: "daybreak", label: "Daybreak", value: false },
+      {
+        type: "boolean",
+        id: "ultracode",
+        label: "Ultracode",
+        value: false,
+        experimental_sticky: true,
+      },
       {
         type: "select",
         id: "mode",
@@ -1144,7 +1151,10 @@ describe("PluginNewThreadComposer seeding", () => {
       );
     const footerMenu = () =>
       latestPromptBoxProps().modeConfig.sessionOptionsControl.props;
-    expect(pickerSections()).toEqual([["daybreak", "Off"]]);
+    expect(pickerSections()).toEqual([
+      ["daybreak", "Off"],
+      ["ultracode", "Off"],
+    ]);
     expect(
       footerMenu().options.map((option: { id: string }) => option.id),
     ).toEqual(["mode"]);
@@ -1155,7 +1165,10 @@ describe("PluginNewThreadComposer seeding", () => {
     await act(async () => {
       footerMenu().onChange("mode", "plan");
     });
-    expect(pickerSections()).toEqual([["daybreak", "On"]]);
+    expect(pickerSections()).toEqual([
+      ["daybreak", "On"],
+      ["ultracode", "Off"],
+    ]);
     expect(footerMenu().options[0].value).toBe("plan");
     await submit();
 

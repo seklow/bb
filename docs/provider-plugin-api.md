@@ -104,10 +104,11 @@ tier the declaration does not list and passes the chosen id to the bridge as
 
 `supportedReasoningEfforts[].reasoningEffort` is an open, non-empty id: the
 standard ladder (`none`, `low`, `medium`, `high`, `xhigh`, `ultracode`,
-`max`, `ultra`) keeps its order and labels, and any other id is the
-provider's own, shown under the entry's optional `label` and sent back as
-`reasoningLevel` unchanged. A bridge that receives an id it does not know
-omits it rather than failing the turn.
+`max`, `ultra`) keeps its order and labels (Claude Code keeps `ultracode` as
+`xhigh` with its `ultracode` session option on, whatever the choice), and any
+other id is the provider's own, shown under the entry's optional `label` and
+sent back as `reasoningLevel` unchanged. A bridge that receives an id it does
+not know omits it rather than failing the turn.
 
 A `model/list` entry may also carry `sessionOptions`, the
 `bb/session-options` option shape with `value` as the provider's default. A
@@ -266,7 +267,8 @@ Execution options ride every command and carry no provider-named field:
 ```
 
 `sessionOptions` carries the user's pending choices among the options the
-bridge published as `bb/session-options`
+bridge published as `bb/session-options`, plus every choice for an option
+published with `experimental_sticky: true`
 ([provider-bridge-protocol.md](provider-bridge-protocol.md), Grammar v3).
 
 **Bridge → runtime**: notifications `thread/delta` (one streaming dialect, one
@@ -319,7 +321,10 @@ picks a value in the model picker (the `mode` option sits in the composer
 footer) or with
 `bb thread options --set`; the server holds the choice, sends it as
 `sessionOptions` with the next turn, and drops it once the bridge publishes
-that value.
+that value. For an option the bridge marks `experimental_sticky: true`, a
+setting the provider does not keep across sessions, the server keeps the
+choice and sends it with every session start and turn until the user clears
+it or the bridge stops publishing the option.
 
 **Delegation** — one kind for every sub-agent encoding:
 

@@ -31,7 +31,7 @@ describe("thread session state output", () => {
     ]);
   });
 
-  it("lists session options, marking the current value of a select", () => {
+  it("lists session options, marking the current value of a select and a sticky option's stored choice", () => {
     expect(
       formatThreadSessionOptions([
         {
@@ -40,8 +40,10 @@ describe("thread session state output", () => {
           label: "Mode",
           description: null,
           category: "mode",
+          sticky: false,
           value: "plan",
           pendingValue: "build",
+          chosenValue: "build",
           values: [
             { id: "plan", label: "Plan", description: null, group: null },
             { id: "build", label: "build", description: null, group: null },
@@ -53,8 +55,21 @@ describe("thread session state output", () => {
           label: "Brave mode",
           description: null,
           category: null,
+          sticky: false,
           value: true,
           pendingValue: null,
+          chosenValue: null,
+        },
+        {
+          type: "boolean",
+          id: "ultracode",
+          label: "Ultracode",
+          description: null,
+          category: null,
+          sticky: true,
+          value: true,
+          pendingValue: false,
+          chosenValue: false,
         },
       ]),
     ).toEqual([
@@ -62,8 +77,12 @@ describe("thread session state output", () => {
       "  * plan  Plan",
       "    build",
       "brave (Brave mode): true",
+      "ultracode (Ultracode): true (your choice: false)",
     ]);
     expect(formatThreadSessionOptions([])).toEqual([
+      "The agent has no session options available right now.",
+    ]);
+    expect(formatThreadSessionOptions(null)).toEqual([
       "The agent has not reported any session options for this thread.",
     ]);
   });
@@ -76,8 +95,10 @@ describe("thread session state output", () => {
         label: "Web search",
         description: null,
         category: null,
+        sticky: false,
         value: false,
         pendingValue: null,
+        chosenValue: null,
       },
     ];
     expect(

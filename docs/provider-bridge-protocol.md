@@ -291,7 +291,8 @@ The current grammar (`grammarVersions: [3, 3]`) includes:
   per-session settings other than model and reasoning level, each a `select`
   (`value`, `values`) or a `boolean`, with an optional `category` such as
   `mode` (the model picker, `bb thread options`; `mode` shows in the composer
-  footer). `bb/provider-model-catalog` carries
+  footer) and an optional `experimental_sticky: true` for a setting the
+  provider does not keep across sessions. `bb/provider-model-catalog` carries
   `{ models, selectedOnlyModels }` using the `model/list` result shape. A
   bridge can publish the catalog its session just received, without another
   discovery request. The server accepts it only for the current provider
@@ -299,14 +300,23 @@ The current grammar (`grammarVersions: [3, 3]`) includes:
   invalidates connected model pickers immediately. Latest snapshot wins:
   re-emit the whole list when it changes. The
   server alone writes `bb/session-option-selections` (choices the provider
-  has not applied yet) and refuses it from a bridge.
-- **`sessionOptions`** (`{ [optionId]: string | boolean }`) on `thread/start`
-  and `turn/start`. Before the bridge publishes `bb/session-options` for the
-  thread it carries every choice made at creation; afterwards only choices
-  that differ from the last published value. The bridge applies each entry
-  before the prompt, skips options or values it does not offer, and
-  publishes the new snapshot, which clears the choice on the server, so an
-  option the provider later changes itself is not forced back.
+  has not applied yet, and sticky choices) and refuses it from a bridge.
+- **`sessionOptions`** (`{ [optionId]: string | boolean }`) on `thread/start`,
+  `thread/resume`, `thread/fork`, `turn/start` and `turn/steer`. Before the
+  bridge publishes `bb/session-options` for the thread it carries every choice
+  made at creation; afterwards only choices that differ from the last
+  published value, plus every choice for a sticky option. The bridge applies
+  each entry before the prompt, skips options or values it does not offer, and
+  publishes the new snapshot, which clears a non-sticky choice on the server,
+  so an option the provider later changes itself is not forced back. A sticky
+  choice stays until the user clears it or the bridge stops publishing the
+  option, so a rebuilt session gets it back. A sticky option missing from a
+  command's `sessionOptions` means the option's default for that command, so
+  the bridge resets it once the user clears the choice; for Claude Code the
+  legacy `ultracode` reasoning level still turns Ultracode on. A bridge with a
+  sticky option publishes its snapshot when a session attaches, without that
+  option when it knows the option is unavailable (empty only when no other
+  option remains), and nothing while it cannot tell.
 - **`provider/recovery`** is a bridge → runtime _notification_ beside
   `session/replaced`, not a delta: `{ threadId?, kind: sessionArchived |
 authRequired | restartRecommended | staleTurn | rateLimited, message,

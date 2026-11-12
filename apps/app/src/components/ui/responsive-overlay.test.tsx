@@ -824,6 +824,60 @@ describe("PersistentResponsiveDrawerShell", () => {
     expect(onAfterCloseAutoFocus).toHaveBeenCalledWith(trigger);
   });
 
+  it("moves focus to the open panel when its focused element is removed", async () => {
+    mockPointerCoarse(true);
+    const drawer = (open: boolean, actionShown: boolean) => (
+      <PersistentResponsiveDrawerShell
+        open={open}
+        onOpenChange={() => {}}
+        srLabel="Details"
+      >
+        {actionShown ? <button type="button">Panel action</button> : null}
+      </PersistentResponsiveDrawerShell>
+    );
+    const view = render(drawer(true, true));
+    const panel = screen.getByRole("dialog", { name: "Details" });
+
+    screen.getByRole("button", { name: "Panel action" }).focus();
+    view.rerender(drawer(true, false));
+    await act(async () => {});
+    expect(document.activeElement).toBe(panel);
+
+    view.rerender(drawer(false, true));
+    screen.getByRole("button", { name: "Panel action", hidden: true }).focus();
+    view.rerender(drawer(false, false));
+    await act(async () => {});
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("restores removed focus only in the top-most open drawer", async () => {
+    mockPointerCoarse(true);
+    const drawers = (childOpen: boolean, contentShown: boolean) => (
+      <PersistentResponsiveDrawerShell
+        open={true}
+        onOpenChange={() => {}}
+        srLabel="Parent"
+      >
+        {contentShown ? <span>Parent status</span> : null}
+        <PersistentResponsiveDrawerShell
+          open={childOpen}
+          onOpenChange={() => {}}
+          srLabel="Child"
+        >
+          {contentShown ? <button type="button">Child action</button> : null}
+        </PersistentResponsiveDrawerShell>
+      </PersistentResponsiveDrawerShell>
+    );
+    const view = render(drawers(false, true));
+    view.rerender(drawers(true, true));
+    const child = screen.getByRole("dialog", { name: "Child" });
+
+    screen.getByRole("button", { name: "Child action" }).focus();
+    view.rerender(drawers(true, false));
+    await act(async () => {});
+    expect(document.activeElement).toBe(child);
+  });
+
   it("retries focus restoration after closing chrome becomes visible", () => {
     mockPointerCoarse(true);
     const onAfterCloseAutoFocus = vi.fn();

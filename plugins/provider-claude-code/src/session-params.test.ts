@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { RuntimePermissionPolicy } from "@get-bb/plugin-sdk/provider-bridge";
+import type {
+  ReasoningLevel,
+  RuntimePermissionPolicy,
+} from "@get-bb/plugin-sdk/provider-bridge";
 import {
   buildClaudeSessionParams,
   buildClaudeTurnParams,
@@ -379,5 +382,60 @@ describe("buildClaudeTurnParams", () => {
       },
     });
     expect(params).not.toHaveProperty("claudeCodePermissionMode");
+  });
+});
+
+describe("ultracode", () => {
+  interface UltracodeOptions {
+    reasoningLevel?: ReasoningLevel;
+    sessionOptions?: Record<string, boolean>;
+  }
+
+  const sessionParams = (options: UltracodeOptions) =>
+    buildClaudeSessionParams({
+      threadId: "thread-1",
+      cwd: "/tmp/worktree",
+      instructionMode: "append",
+      options: { ...FULL_POLICY, ...options },
+    });
+  const turnParams = (options: UltracodeOptions) =>
+    buildClaudeTurnParams({
+      threadId: "thread-1",
+      providerThreadId: "provider-1",
+      input: [{ type: "text", text: "hi", mentions: [] }],
+      options: { ...FULL_POLICY, ...options },
+    });
+
+  it("no choice: the ultracode level implies on, and any other level or none leaves it off", () => {
+    for (const build of [sessionParams, turnParams]) {
+      expect(build({ reasoningLevel: "ultracode" })).toMatchObject({
+        reasoningLevel: "ultracode",
+        ultracode: true,
+      });
+      expect(build({ reasoningLevel: "max" })).toMatchObject({
+        reasoningLevel: "max",
+        ultracode: false,
+      });
+      expect(build({})).toMatchObject({ ultracode: false });
+    }
+  });
+
+  it("the ultracode level keeps Ultracode on over an explicit choice, and other levels follow the choice", () => {
+    for (const build of [sessionParams, turnParams]) {
+      expect(
+        build({ reasoningLevel: "max", sessionOptions: { ultracode: true } }),
+      ).toMatchObject({ reasoningLevel: "max", ultracode: true });
+      expect(
+        build({
+          reasoningLevel: "ultracode",
+          sessionOptions: { ultracode: false },
+        }),
+      ).toMatchObject({ reasoningLevel: "ultracode", ultracode: true });
+    }
+    for (const ultracode of [true, false]) {
+      expect(turnParams({ sessionOptions: { ultracode } })).toMatchObject({
+        ultracode,
+      });
+    }
   });
 });

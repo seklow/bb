@@ -16,6 +16,7 @@ import {
   changedMessageSchema,
   threadScope,
   turnScope,
+  type JsonObject,
   type ServiceTier,
   type Thread,
   type ThreadChangedMessage,
@@ -1728,40 +1729,37 @@ describe("idle cold-start activation", () => {
 });
 
 describe("session option selection dispatch", () => {
-  async function submitOptionsAfter(
+  const modeOption: JsonObject = {
+    type: "select",
+    id: "mode",
+    label: "Mode",
+    value: "plan",
+    values: [
+      { id: "plan", label: "Plan" },
+      { id: "build", label: "Build" },
+    ],
+  };
+
+  function ultracodeOption(value: boolean, sticky: boolean): JsonObject {
+    return {
+      type: "boolean",
+      id: "ultracode",
+      label: "Ultracode",
+      value,
+      ...(sticky ? { experimental_sticky: true } : {}),
+    };
+  }
+
+  async function sendTurn(
     harness: TestAppHarness,
-    value: number,
-    choose: (thread: Thread) => void,
+    threadId: string,
+    text: string,
   ) {
-    const { thread } = seedProviderThreadFixture({ harness, value });
-    threadEvents.appendThreadEvent(harness.deps, {
-      threadId: thread.id,
-      environmentId: thread.environmentId,
-      type: "thread/extensionState/updated",
-      scope: threadScope(),
-      data: {
-        providerThreadId: `provider-send-dispatch-${value}`,
-        kind: "bb/session-options",
-        payload: {
-          options: [
-            {
-              type: "select",
-              id: "mode",
-              label: "Mode",
-              value: "plan",
-              values: [
-                { id: "plan", label: "Plan" },
-                { id: "build", label: "Build" },
-              ],
-            },
-          ],
-        },
-      },
-    });
-    choose(thread);
+    const thread = getThread(harness.db, threadId);
+    if (!thread) throw new Error("Expected the thread");
     const queued = await createQueuedMessageForThread(harness.deps, {
       thread,
-      payload: { input: textInput("next turn") },
+      payload: { input: textInput(text) },
     });
     await sendQueuedMessage(harness.deps, {
       claimPolicy: {
@@ -1776,14 +1774,43 @@ describe("session option selection dispatch", () => {
       queuedMessageId: queued.id,
       mode: "auto",
     });
-    const commands = listQueuedThreadCommands(
+    const submitted = await waitForQueuedCommand(
       harness,
-      "turn.submit",
-      thread.id,
+      ({ command }) =>
+        command.type === "turn.submit" &&
+        command.threadId === threadId &&
+        JSON.stringify(command.input).includes(text),
     );
-    expect(commands).toHaveLength(1);
-    const command = commands[0];
-    return command?.type === "turn.submit" ? command.options : null;
+    if (submitted.command.type !== "turn.submit") {
+      throw new Error("Expected a turn.submit command");
+    }
+    return { queued: submitted, command: submitted.command };
+  }
+
+  async function submitOptionsAfter(
+    harness: TestAppHarness,
+    value: number,
+    choose: (thread: Thread) => void,
+    options: JsonObject[] = [modeOption],
+  ) {
+    const { thread } = seedProviderThreadFixture({ harness, value });
+    threadEvents.appendThreadEvent(harness.deps, {
+      threadId: thread.id,
+      environmentId: thread.environmentId,
+      type: "thread/extensionState/updated",
+      scope: threadScope(),
+      data: {
+        providerThreadId: `provider-send-dispatch-${value}`,
+        kind: "bb/session-options",
+        payload: { options },
+      },
+    });
+    choose(thread);
+    const { command } = await sendTurn(harness, thread.id, "next turn");
+    expect(
+      listQueuedThreadCommands(harness, "turn.submit", thread.id),
+    ).toHaveLength(1);
+    return command.options;
   }
 
   it("sends a chosen session option with the next turn, and nothing when no choice is pending", async () => {
@@ -1809,6 +1836,88 @@ describe("session option selection dispatch", () => {
       ).toMatchObject({ sessionOptions: { mode: "build" } });
     });
   });
+
+  it("keeps and sends a sticky choice equal to the value the agent reports", async () => {
+    await withTestHarness(async (harness) => {
+      expect(
+        await submitOptionsAfter(
+          harness,
+          94,
+          (thread) =>
+            applyThreadSessionOptionPatch(harness.deps, {
+              thread,
+              patch: { ultracode: true },
+            }),
+          [ultracodeOption(true, true)],
+        ),
+      ).toMatchObject({ sessionOptions: { ultracode: true } });
+    });
+  });
+
+  it.each([
+    { sticky: true, value: 95, later: { ultracode: true } },
+    { sticky: false, value: 96, later: undefined },
+  ])(
+    "after the agent applies a choice, sends it on later turns only when the option is sticky (sticky: $sticky)",
+    async ({ sticky, value, later }) => {
+      await withTestHarness(async (harness) => {
+        const { sessionId, thread } = seedProviderThreadFixture({
+          harness,
+          value,
+        });
+        const providerThreadId = `provider-send-dispatch-${value}`;
+        const reported = (ultracode: boolean): ThreadEvent => ({
+          type: "thread/extensionState/updated",
+          threadId: thread.id,
+          providerThreadId,
+          scope: threadScope(),
+          kind: "bb/session-options",
+          payload: { options: [ultracodeOption(ultracode, sticky)] },
+        });
+
+        await postProviderEvents(harness, sessionId, [reported(false)]);
+        applyThreadSessionOptionPatch(harness.deps, {
+          thread,
+          patch: { ultracode: true },
+        });
+        const first = await sendTurn(harness, thread.id, "first turn");
+        expect(first.command.options).toMatchObject({
+          sessionOptions: { ultracode: true },
+        });
+
+        await postProviderEvents(harness, sessionId, [
+          {
+            type: "turn/started",
+            threadId: thread.id,
+            providerThreadId,
+            scope: turnScope("turn-applied"),
+          },
+          {
+            type: "turn/input/accepted",
+            threadId: thread.id,
+            providerThreadId,
+            scope: turnScope("turn-applied"),
+            clientRequestId: first.command.requestId,
+          },
+          reported(true),
+        ]);
+        await reportQueuedCommandSuccess(harness, first.queued, {
+          trace: { spans: [] },
+        });
+        await postProviderEvents(harness, sessionId, [
+          {
+            type: "turn/completed",
+            threadId: thread.id,
+            providerThreadId,
+            scope: turnScope("turn-applied"),
+            status: "completed",
+          },
+        ]);
+        const next = await sendTurn(harness, thread.id, "later turn");
+        expect(next.command.options.sessionOptions).toEqual(later);
+      });
+    },
+  );
 });
 
 describe("service tier execution lifecycle", () => {

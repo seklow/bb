@@ -44,6 +44,7 @@ import {
   buildThreadStartCommand,
 } from "./thread-commands.js";
 import { resolveDispatchAuthor } from "./dispatch-author.js";
+import { listCarriedStickySessionOptionStates } from "./thread-session-options.js";
 import { resolvePermissionEscalation } from "./thread-runtime-config.js";
 import { requireReadyThreadEnvironment } from "./thread-turn-dispatch.js";
 import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
@@ -656,14 +657,17 @@ export async function editThreadMessage(
           ) {
             conflict("The thread changed while the edit was being prepared");
           }
-          const carriedSettlements = listCarriedBackgroundSettlements(tx, {
+          const carryArgs = {
             cutoffSequence: target.requestSequence,
             environmentId: editableThread.environmentId,
             oldMaxSequence: target.oldMaxSequence,
             threadId: editableThread.id,
-          });
-          requestSequence =
-            target.oldMaxSequence + 2 + carriedSettlements.length;
+          };
+          const carriedEvents = [
+            ...listCarriedBackgroundSettlements(tx, carryArgs),
+            ...listCarriedStickySessionOptionStates(tx, carryArgs),
+          ];
+          requestSequence = target.oldMaxSequence + 2 + carriedEvents.length;
           appendThreadEventInTransaction(tx, {
             threadId: editableThread.id,
             environmentId: editableThread.environmentId,
@@ -695,7 +699,7 @@ export async function editThreadMessage(
             oldMaxSequence: target.oldMaxSequence,
             threadId: editableThread.id,
           });
-          appendThreadEventsInTransaction(tx, carriedSettlements);
+          appendThreadEventsInTransaction(tx, carriedEvents);
         },
         historyReplacement: {
           forkSourceProviderThreadId: stagedProviderThreadId,

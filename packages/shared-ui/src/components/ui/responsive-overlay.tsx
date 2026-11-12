@@ -586,15 +586,30 @@ export function usePersistentOverlayFocus({
       previousFocus !== ownerDocument.body
         ? previousFocus
         : null;
-    const unregister = registerOpenDrawer(ownerDocument, {
+    const stackEntry: PersistentDrawerStackEntry = {
       panel: () => panelRef.current,
       dismissOnEscape: (event) => {
         onEscapeKeyDownRef.current?.(event);
         if (!event.defaultPrevented) requestClose();
       },
+    };
+    const unregister = registerOpenDrawer(ownerDocument, stackEntry);
+    const removedFocusObserver = new MutationObserver((mutations) => {
+      if (
+        ownerDocument.activeElement === ownerDocument.body &&
+        readPersistentDrawerStack(ownerDocument)?.entries.at(-1) ===
+          stackEntry &&
+        mutations.some((mutation) => mutation.removedNodes.length > 0)
+      ) {
+        panel.focus({ preventScroll: true });
+      }
     });
+    removedFocusObserver.observe(panel, { childList: true, subtree: true });
     panel.focus({ preventScroll: true });
-    return unregister;
+    return () => {
+      removedFocusObserver.disconnect();
+      unregister();
+    };
   }, [open, panelRef, requestClose]);
 
   const previousOpenRef = React.useRef(open);

@@ -23,12 +23,14 @@ import { threadResponseSchema } from "@bb/server-contract";
 import { describe, expect, it, vi } from "vitest";
 import { editThreadMessage } from "../../src/services/threads/thread-edit-message.js";
 import { requestThreadStopForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
+import { resolveRetainedThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
 import {
   listQueuedThreadCommands,
   reportQueuedCommandError,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
   waitForQueuedCommandAfter,
+  type QueuedCommand,
 } from "../helpers/commands.js";
 import {
   seedEnvironment,
@@ -288,6 +290,159 @@ function seedEditableThread(
     });
   }
   return { environment, thread };
+}
+
+type SessionOptionState =
+  | { options: Record<string, unknown>[] }
+  | { selections: Record<string, boolean | string> };
+
+function ultracodeOption(value: boolean) {
+  return {
+    type: "boolean",
+    id: "ultracode",
+    label: "Ultracode",
+    value,
+    experimental_sticky: true,
+  };
+}
+
+function modeOption(value: string) {
+  return {
+    type: "select",
+    id: "mode",
+    label: "Mode",
+    value,
+    values: [
+      { id: "plan", label: "Plan" },
+      { id: "build", label: "Build" },
+    ],
+  };
+}
+
+function seedSessionOptionStates(
+  harness: TestAppHarness,
+  args: { sequence: number; states: SessionOptionState[]; threadId: string },
+): number {
+  args.states.forEach((payload, index) => {
+    seedStoredEvent(harness.deps, {
+      threadId: args.threadId,
+      providerThreadId: "provider-original",
+      sequence: args.sequence + index,
+      type: "thread/extensionState/updated",
+      scope: threadScope(),
+      data: {
+        providerThreadId: "provider-original",
+        kind:
+          "options" in payload
+            ? "bb/session-options"
+            : "bb/session-option-selections",
+        payload,
+      },
+    });
+  });
+  return args.sequence + args.states.length;
+}
+
+async function editSessionOptionMessage(
+  harness: TestAppHarness,
+  args: ReturnType<typeof seedEditableThread> & {
+    requestSequence: number;
+    rewind: boolean;
+  },
+) {
+  const editing = editThreadMessage(harness.deps, {
+    environment: args.environment,
+    thread: args.thread,
+    payload: {
+      operationId: `edit-op-session-options-${args.requestSequence}`,
+      expectedRequestSequence: args.requestSequence,
+      input: [{ type: "text", text: "Replacement", mentions: [] }],
+    },
+  });
+  if (args.rewind) {
+    const rewind = await waitForQueuedCommand(
+      harness,
+      (queued) => queued.command.type === "thread.rewind.prepare",
+    );
+    await reportQueuedCommandSuccess(harness, rewind, {
+      providerThreadId: "provider-staged-session-options",
+    });
+  }
+  const { requestSequence } = await editing;
+  const replacement = await waitForQueuedCommand(
+    harness,
+    (queued) =>
+      queued.command.type === "thread.start" &&
+      queued.command.threadId === args.thread.id,
+  );
+  return { replacement, requestSequence };
+}
+
+async function failSessionOptionReplacement(
+  harness: TestAppHarness,
+  args: { replacement: QueuedCommand; threadId: string },
+) {
+  await reportQueuedCommandError(harness, args.replacement, {
+    errorCode: "provider_error",
+    errorMessage: "Replacement session failed",
+  });
+  await vi.waitFor(() =>
+    expect(getThread(harness.db, args.threadId)?.status).toBe("error"),
+  );
+}
+
+async function editAfterSessionOptionStates(
+  harness: TestAppHarness,
+  args: {
+    after: SessionOptionState[];
+    before: SessionOptionState[];
+    firstMessage: boolean;
+  },
+) {
+  const seeded = seedEditableThread(harness, {
+    includeIdentity: !args.firstMessage,
+    includeSecondTurn: false,
+    providerId: "claude-code",
+  });
+  const { thread } = seeded;
+  const nextSequence = seedSessionOptionStates(harness, {
+    sequence: args.firstMessage ? 1 : 7,
+    states: args.before,
+    threadId: thread.id,
+  });
+  const editedSequence = args.firstMessage ? 2 : nextSequence;
+  if (!args.firstMessage) {
+    seedTurn(harness, {
+      providerCheckpointId: "checkpoint-last",
+      providerThreadId: "provider-original",
+      requestSequence: editedSequence,
+      text: "Original last message",
+      threadId: thread.id,
+      turnId: "turn-last",
+    });
+  }
+  const oldMaxSequence =
+    seedSessionOptionStates(harness, {
+      sequence: editedSequence + 5,
+      states: args.after,
+      threadId: thread.id,
+    }) - 1;
+
+  const { replacement } = await editSessionOptionMessage(harness, {
+    ...seeded,
+    requestSequence: editedSequence,
+    rewind: !args.firstMessage,
+  });
+  return {
+    sent:
+      replacement.command.type === "thread.start"
+        ? (replacement.command.options.sessionOptions ?? {})
+        : null,
+    retained: resolveRetainedThreadSessionOptions(harness.db, thread.id),
+    appended: listEvents(harness.db, { threadId: thread.id })
+      .filter((event) => event.sequence > oldMaxSequence)
+      .map((event) => event.type),
+  };
 }
 
 describe("editThreadMessage", () => {
@@ -1220,6 +1375,323 @@ describe("editThreadMessage", () => {
           threadIds: [thread.id],
         }),
       ).toEqual([]);
+    });
+  });
+
+  it.each([
+    { firstMessage: true, choice: true },
+    { firstMessage: true, choice: false },
+    { firstMessage: false, choice: true },
+    { firstMessage: false, choice: false },
+  ])(
+    "keeps a sticky choice ($choice) made after the edited message (first message: $firstMessage)",
+    async ({ firstMessage, choice }) => {
+      await withTestHarness(async (harness) => {
+        expect(
+          await editAfterSessionOptionStates(harness, {
+            firstMessage,
+            before: [],
+            after: [
+              { selections: { ultracode: choice } },
+              { options: [ultracodeOption(choice)] },
+            ],
+          }),
+        ).toEqual({
+          sent: { ultracode: choice },
+          retained: { ultracode: choice },
+          appended: [
+            "system/operation",
+            "thread/extensionState/updated",
+            "client/turn/requested",
+          ],
+        });
+      });
+    },
+  );
+
+  it.each([{ choice: true }, { choice: false }])(
+    "keeps a sticky choice ($choice) made after the edited message when the snapshot before it does not offer the option",
+    async ({ choice }) => {
+      await withTestHarness(async (harness) => {
+        expect(
+          await editAfterSessionOptionStates(harness, {
+            firstMessage: false,
+            before: [{ options: [] }],
+            after: [
+              { options: [ultracodeOption(false)] },
+              { selections: { ultracode: choice } },
+            ],
+          }),
+        ).toEqual({
+          sent: { ultracode: choice },
+          retained: { ultracode: choice },
+          appended: [
+            "system/operation",
+            "thread/extensionState/updated",
+            "thread/extensionState/updated",
+            "client/turn/requested",
+          ],
+        });
+      });
+    },
+  );
+
+  it("keeps non-sticky choices from before the edited message beside a sticky choice the snapshot before it does not offer", async () => {
+    await withTestHarness(async (harness) => {
+      expect(
+        await editAfterSessionOptionStates(harness, {
+          firstMessage: false,
+          before: [
+            { options: [modeOption("plan")] },
+            { selections: { mode: "build" } },
+          ],
+          after: [
+            { options: [modeOption("build"), ultracodeOption(false)] },
+            { selections: { ultracode: true } },
+          ],
+        }),
+      ).toEqual({
+        sent: { ultracode: true },
+        retained: { mode: "build", ultracode: true },
+        appended: [
+          "system/operation",
+          "thread/extensionState/updated",
+          "thread/extensionState/updated",
+          "client/turn/requested",
+        ],
+      });
+    });
+  });
+
+  it.each([
+    {
+      name: "cleared by the user",
+      firstMessage: true,
+      before: [{ selections: { ultracode: true } }],
+      after: [{ options: [ultracodeOption(true)] }, { selections: {} }],
+    },
+    {
+      name: "dropped with an option that went away",
+      firstMessage: false,
+      before: [
+        { options: [ultracodeOption(false)] },
+        { selections: { ultracode: true } },
+      ],
+      after: [{ options: [] }, { selections: {} }],
+    },
+    {
+      name: "dropped with an option reported only after the edited message",
+      firstMessage: true,
+      before: [{ selections: { ultracode: true } }],
+      after: [
+        { options: [ultracodeOption(true)] },
+        { options: [] },
+        { selections: {} },
+      ],
+    },
+  ])(
+    "does not bring back a sticky choice from before the edited message once it was $name",
+    async ({ firstMessage, before, after }) => {
+      await withTestHarness(async (harness) => {
+        expect(
+          (
+            await editAfterSessionOptionStates(harness, {
+              firstMessage,
+              before,
+              after,
+            })
+          ).retained,
+        ).toEqual({});
+      });
+    },
+  );
+
+  it.each([
+    {
+      state: "set",
+      beforeFirst: [],
+      afterSecond: [
+        { options: [ultracodeOption(false)] },
+        { selections: { ultracode: true } },
+      ],
+      expected: { ultracode: true },
+    },
+    {
+      state: "set behind an empty snapshot",
+      beforeFirst: [{ options: [] }],
+      afterSecond: [
+        { options: [ultracodeOption(false)] },
+        { selections: { ultracode: true } },
+      ],
+      expected: { ultracode: true },
+    },
+    {
+      state: "cleared",
+      beforeFirst: [{ selections: { ultracode: true } }],
+      afterSecond: [{ options: [ultracodeOption(true)] }, { selections: {} }],
+      expected: {},
+    },
+  ])(
+    "keeps the sticky choice state when an earlier message is edited after a later one ($state)",
+    async ({ beforeFirst, afterSecond, expected }) => {
+      await withTestHarness(async (harness) => {
+        const seeded = seedEditableThread(harness, {
+          includeIdentity: false,
+          providerId: "claude-code",
+        });
+        const threadId = seeded.thread.id;
+        seedSessionOptionStates(harness, {
+          sequence: 1,
+          states: beforeFirst,
+          threadId,
+        });
+        seedSessionOptionStates(harness, {
+          sequence: 12,
+          states: afterSecond,
+          threadId,
+        });
+
+        const { replacement } = await editSessionOptionMessage(harness, {
+          ...seeded,
+          requestSequence: 7,
+          rewind: true,
+        });
+        await failSessionOptionReplacement(harness, { replacement, threadId });
+        await editSessionOptionMessage(harness, {
+          ...seeded,
+          requestSequence: 2,
+          rewind: false,
+        });
+
+        expect(
+          resolveRetainedThreadSessionOptions(harness.db, threadId),
+        ).toEqual(expected);
+      });
+    },
+  );
+
+  it("keeps a sticky choice dropped by the replacement session dropped when the message is edited again", async () => {
+    await withTestHarness(async (harness) => {
+      const seeded = seedEditableThread(harness, {
+        includeIdentity: false,
+        includeSecondTurn: false,
+        providerId: "claude-code",
+      });
+      const threadId = seeded.thread.id;
+      seedSessionOptionStates(harness, {
+        sequence: 1,
+        states: [{ selections: { ultracode: true } }],
+        threadId,
+      });
+      seedSessionOptionStates(harness, {
+        sequence: 7,
+        states: [{ options: [ultracodeOption(true)] }],
+        threadId,
+      });
+
+      const { replacement, requestSequence } = await editSessionOptionMessage(
+        harness,
+        { ...seeded, requestSequence: 2, rewind: false },
+      );
+      if (replacement.command.type !== "thread.start") {
+        throw new Error("Expected a thread.start command");
+      }
+      const clientRequestId = replacement.command.requestId;
+      await failSessionOptionReplacement(harness, { replacement, threadId });
+      const sequence =
+        Math.max(
+          ...listEvents(harness.db, { threadId }).map(
+            (event) => event.sequence,
+          ),
+        ) + 1;
+      seedStoredEvent(harness.deps, {
+        threadId,
+        providerThreadId: "provider-replacement",
+        sequence,
+        type: "turn/started",
+        scope: turnScope("turn-replacement"),
+        data: { providerThreadId: "provider-replacement" },
+      });
+      seedStoredEvent(harness.deps, {
+        threadId,
+        providerThreadId: "provider-replacement",
+        sequence: sequence + 1,
+        type: "turn/input/accepted",
+        scope: turnScope("turn-replacement"),
+        data: { providerThreadId: "provider-replacement", clientRequestId },
+      });
+      seedSessionOptionStates(harness, {
+        sequence: sequence + 2,
+        states: [{ options: [] }, { selections: {} }],
+        threadId,
+      });
+      await editSessionOptionMessage(harness, {
+        ...seeded,
+        requestSequence,
+        rewind: false,
+      });
+
+      expect(resolveRetainedThreadSessionOptions(harness.db, threadId)).toEqual(
+        {},
+      );
+    });
+  });
+
+  it("leaves non-sticky options as they were before the first message when carrying a sticky choice", async () => {
+    await withTestHarness(async (harness) => {
+      expect(
+        await editAfterSessionOptionStates(harness, {
+          firstMessage: true,
+          before: [{ selections: { daybreak: true } }],
+          after: [
+            {
+              options: [
+                {
+                  type: "boolean",
+                  id: "daybreak",
+                  label: "Daybreak",
+                  value: true,
+                },
+                modeOption("plan"),
+                ultracodeOption(false),
+              ],
+            },
+            { selections: { ultracode: true } },
+          ],
+        }),
+      ).toEqual({
+        sent: { ultracode: true },
+        retained: { daybreak: true, ultracode: true },
+        appended: [
+          "system/operation",
+          "thread/extensionState/updated",
+          "client/turn/requested",
+        ],
+      });
+    });
+  });
+
+  it("appends no session option event when the thread has no sticky option", async () => {
+    await withTestHarness(async (harness) => {
+      expect(
+        await editAfterSessionOptionStates(harness, {
+          firstMessage: false,
+          before: [
+            { options: [modeOption("plan")] },
+            { selections: { mode: "build" } },
+          ],
+          after: [
+            {
+              options: [{ ...modeOption("build"), experimental_sticky: false }],
+            },
+            { selections: {} },
+          ],
+        }),
+      ).toEqual({
+        sent: {},
+        retained: { mode: "build" },
+        appended: ["system/operation", "client/turn/requested"],
+      });
     });
   });
 

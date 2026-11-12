@@ -826,6 +826,40 @@ describe("useThreadCreationOptions", () => {
     ).toEqual([false, false]);
   });
 
+  it("gives a model its own agent options by exact or bare id, and none when the catalog lacks it", async () => {
+    vi.mocked(sdk.system.executionOptions).mockImplementation(async (args) => {
+      const response = daybreakExecutionOptionsResponse(args?.providerId);
+      return {
+        ...response,
+        models: response.models.map((model) =>
+          model.isDefault
+            ? model
+            : { ...model, model: `vendor/${model.model}` },
+        ),
+      };
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          scope: "component-local",
+          initialProviderId: GLOBAL_PROVIDER_ID,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(result.current.selectedModel).toBe("global-default"),
+    );
+    expect(result.current.sessionOptionsForModel("global-default")).toEqual([
+      expect.objectContaining({ id: "daybreak", fixed: true }),
+    ]);
+    expect(result.current.sessionOptionsForModel("global-remembered")).toEqual([
+      expect.objectContaining({ id: "daybreak", fixed: false }),
+    ]);
+    expect(result.current.sessionOptionsForModel("retired-model")).toEqual([]);
+  });
+
   it("refreshes untouched Fast defaults but preserves an unsent choice until thread reset", async () => {
     const { wrapper } = createQueryClientTestHarness();
     const { result, rerender } = renderHook(
